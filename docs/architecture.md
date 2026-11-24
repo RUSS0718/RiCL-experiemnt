@@ -1,6 +1,6 @@
 # Architecture and workflow
 
-This document preserves the agreed bootstrap choices and target contracts. It describes the intended destination; absent directories and study commands are added with their implementation slices, not as empty placeholders.
+This document preserves the agreed bootstrap choices and target contracts. Issue #14 implements the first vertical slice: a configurable, single-sample `run`/`resume` CLI with HTTPX dispatch and SQLite auditing. Dataset preparation, study orchestration, analysis, and plotting remain future slices; absent modules are added with their owning issues, not as empty placeholders.
 
 ## Selected stack
 
@@ -75,6 +75,7 @@ config.json
 manifest.json
 metadata.json
 run.sqlite3                 # authoritative call/response/usage ledger
+responses/                  # raw response bytes, referenced by the ledger
 traces/                     # derived candidates, rollouts, evaluations (JSONL)
 metrics/                    # derived per-sample CSV and summary/bootstrap JSON
 figures/                    # derived PDF/PNG/SVG
@@ -83,18 +84,15 @@ report.md                   # derived report
 
 SQLite is the source of truth for dispatch and persisted results. JSONL, metrics, figures, and reports are reproducible exports, not separately maintained state. Raw/restricted traces stay local; publish only after license, redaction, and label-leakage checks.
 
-## CLI target
+## CLI status
+
+Implemented in issue #14:
 
 ```powershell
-uv sync --frozen
-uv run python -m ricl_experiment --help
-uv run python -m ricl_experiment prepare --study ms2 --phase pilot
-uv run python -m ricl_experiment run --study ms2 --phase pilot --config configs/motivation/ms2.toml
-uv run python -m ricl_experiment resume --run-id <run_id>
-uv run python -m ricl_experiment analyze --run-id <run_id>
-uv run python -m ricl_experiment plot --run-id <run_id>
+uv run python -m ricl_experiment run --study ms2 --phase pilot --config configs/models/default.toml --manifest configs/examples/single-sample.json
+uv run python -m ricl_experiment resume --run-id <run_id> --config configs/models/default.toml --manifest configs/examples/single-sample.json
 ```
 
-These are the intended commands, not claims of current implementation. Keep one CLI and add each command with its owning issue. Validate required model capabilities and parameters before network dispatch. A resume must explicitly name the original run and reject changed config, manifest, or prompt fingerprints. Persist an attempt and budget reservation before every send; unknown usage remains reserved until reconciled. Reuse complete persisted responses and never let an extra/late response create a second analysis result for one logical call.
+`run` and `resume` share validated TOML/JSON configuration. The initial runner accepts exactly one manifest sample. `prepare`, `analyze`, and `plot`, plus study-specific multi-sample orchestration, remain future issue slices. Static model capabilities are checked before dispatch. Resume requires the original `run_id` and rejects changed config, manifest, or prompt fingerprints. Each HTTP send has a committed attempt row and output-token reservation first; unknown usage remains reserved. Responses and the unique logical-call analysis owner are committed in SQLite, and only one scheduler process may hold a run at a time.
 
 Model requests must be built from role-specific allowlists. Standard answers, expert labels, independent evaluations, and future outcomes remain unavailable to generation/rating roles except for protocol-defined oracle conditions. Test the actual serialized request, not only an internal role declaration.

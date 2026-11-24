@@ -1,0 +1,17 @@
+[model]
+base_url = "https://api.openai.com/v1"
+model = "replace-with-model-id"
+api_key_env = "RICL_API_KEY"
+timeout_seconds = 60
+
+[model.capabilities]
+supported_parameters = ["max_tokens", "temperature"]
+required_parameters = ["max_tokens"]
+
+[model.parameters]
+max_tokens = 1024
+temperature = 0
+
+[budget]
+max_attempts_per_call = 2
+max_reserved_output_tokens = 2048

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "manifest_id": "single-sample-example",
+  "dataset_version": "replace-with-pinned-dataset-version",
+  "samples": [
+    {
+      "sample_id": "example-001",
+      "prompt": "Replace with the exact generation prompt for one sample."
+    }
+  ]
+}

@@ -2,7 +2,7 @@ import subprocess
 import sys
 
 
-def test_module_help_identifies_the_cli_and_current_scope():
+def test_module_help_lists_single_sample_run_and_resume_commands():
     result = subprocess.run(
         [sys.executable, "-m", "ricl_experiment", "--help"],
         capture_output=True,
@@ -12,5 +12,6 @@ def test_module_help_identifies_the_cli_and_current_scope():
 
     assert result.returncode == 0
     assert "RiCL Motivation Study" in result.stdout
-    assert "study commands are not yet implemented" in result.stdout
+    assert "run" in result.stdout
+    assert "resume" in result.stdout
     assert result.stderr == ""

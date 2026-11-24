@@ -16,7 +16,7 @@ def test_processbench_labels_and_pool_membership_stay_out_of_public_manifest():
             "generator": "model-a",
             "source": "math",
             "problem": "Solve 2 + 2.",
-            "steps": ["Add 2 and 2.", "Return 4."],
+            "steps": ["  Add 2 and 2.  ", "Return 4."],
             "label": 0,
             "final_answer_correct": False,
             "reference_material": {
@@ -63,3 +63,9 @@ def test_processbench_labels_and_pool_membership_stay_out_of_public_manifest():
         if sample["trajectory_source_id"] == "error-trace"
     ]
     assert len(prepared.audit["study_pools"]["diagnosis"]) == 2
+    public_error = next(
+        sample
+        for sample in prepared.manifest["samples"]
+        if sample["trajectory_source_id"] == "error-trace"
+    )
+    assert public_error["steps"] == records[0]["steps"]

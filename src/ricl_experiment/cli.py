@@ -19,6 +19,8 @@ from .datasets.manifest import (
     write_prepared_manifest,
 )
 from .motivation.ms2 import resume_ms2_run, start_ms2_run
+from .motivation.ms3.analysis import write_analysis
+from .motivation.ms3.diagnosis import run_diagnosis
 from .motivation.ms3_repair import run_ms3_repair
 from .runner import resume_run, start_run
 
@@ -109,6 +111,18 @@ def build_parser() -> argparse.ArgumentParser:
     analysis.add_argument("--output", type=Path)
     analysis.add_argument("--bootstrap-samples", type=int, default=1000)
     analysis.add_argument("--seed", type=int, default=0)
+    diagnose = commands.add_parser(
+        "ms3-diagnose", help="run paired, blinded ProcessBench diagnosis calls"
+    )
+    diagnose.add_argument("--config", required=True, type=Path)
+    diagnose.add_argument("--manifest", required=True, type=Path)
+    diagnose.add_argument("--output", required=True, type=Path)
+    analyze = commands.add_parser(
+        "ms3-analyze", help="analyze saved MS3 calls offline against the restricted audit"
+    )
+    analyze.add_argument("--run", required=True, type=Path)
+    analyze.add_argument("--audit", required=True, type=Path)
+    analyze.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -186,6 +200,17 @@ def main(argv: list[str] | None = None) -> int:
             _write_json(output_path, report)
             print(f"analysis={output_path}")
             print(f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}")
+            return 0
+        elif args.command == "ms3-diagnose":
+            config = load_config(args.config)
+            validate_api_key(config)
+            run = run_diagnosis(config, args.manifest, args.output)
+            print(f"run={args.output / 'run.json'}")
+            print(f"status={run['status']}")
+            return 0 if run["status"] == "completed" else 2
+        elif args.command == "ms3-analyze":
+            output_path = write_analysis(args.run, args.audit, args.output)
+            print(f"analysis={output_path}")
             return 0
         elif args.command == "exclude-groups":
             output_path = export_question_group_exclusions(args.manifest, args.output)

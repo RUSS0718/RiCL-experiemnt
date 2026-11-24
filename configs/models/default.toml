@@ -12,6 +12,10 @@ required_parameters = ["max_tokens"]
 max_tokens = 1024
 temperature = 0
 
+[ms2]
+initial_max_tokens = 1500
+continuation_max_tokens = 2000
+
 [budget]
 max_attempts_per_call = 2
-max_reserved_output_tokens = 2048
+max_reserved_output_tokens = 16500

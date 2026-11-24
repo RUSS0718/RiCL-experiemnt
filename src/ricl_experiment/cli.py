@@ -18,8 +18,24 @@ from .datasets.manifest import (
     write_overlap_report,
     write_prepared_manifest,
 )
+from .motivation.ms2 import resume_ms2_run, start_ms2_run
 from .motivation.ms3_repair import run_ms3_repair
 from .runner import resume_run, start_run
+
+
+def _add_ms2_inputs(parser: argparse.ArgumentParser, *, resume: bool = False) -> None:
+    if resume:
+        parser.add_argument("--run-id", required=True)
+    else:
+        parser.add_argument(
+            "--phase",
+            choices=("pilot", "adjustment_validation", "confirmatory"),
+            required=True,
+        )
+    parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--answer-key", required=True, type=Path)
+    parser.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,11 +53,20 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", required=True, type=Path)
     run.add_argument("--manifest", required=True, type=Path)
     run.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
+    run.add_argument("--answer-key", type=Path, help="restricted MS2 answer key")
     resume = commands.add_parser("resume", help="resume one named run after fingerprint checks")
     resume.add_argument("--run-id", required=True)
     resume.add_argument("--config", required=True, type=Path)
     resume.add_argument("--manifest", required=True, type=Path)
     resume.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
+    resume.add_argument("--study", choices=("single", "ms2"), default="single")
+    resume.add_argument("--answer-key", type=Path, help="restricted MS2 answer key")
+    ms2 = commands.add_parser("ms2", help="run a blinded MS2 Checkpoint and rollout study")
+    ms2_commands = ms2.add_subparsers(dest="ms2_command", required=True)
+    ms2_run = ms2_commands.add_parser("run", help="start three candidates per sample")
+    _add_ms2_inputs(ms2_run)
+    ms2_resume = ms2_commands.add_parser("resume", help="resume frozen MS2 logical calls")
+    _add_ms2_inputs(ms2_resume, resume=True)
     prepare = commands.add_parser(
         "prepare", help="freeze from local pinned snapshots without fetching data or calling a model"
     )
@@ -93,11 +118,32 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "run":
-            run_id = start_run(
-                args.study, args.phase, args.config, args.manifest, args.artifacts_root
-            )
+            if args.study == "ms2" and args.answer_key is not None:
+                run_id, status = start_ms2_run(
+                    args.phase, args.config, args.manifest, args.answer_key, args.artifacts_root
+                )
+            else:
+                run_id = start_run(
+                    args.study, args.phase, args.config, args.manifest, args.artifacts_root
+                )
+                status = "completed"
         elif args.command == "resume":
-            run_id = resume_run(args.run_id, args.config, args.manifest, args.artifacts_root)
+            if args.study == "ms2" and args.answer_key is not None:
+                run_id, status = resume_ms2_run(
+                    args.run_id, args.config, args.manifest, args.answer_key, args.artifacts_root
+                )
+            else:
+                run_id = resume_run(args.run_id, args.config, args.manifest, args.artifacts_root)
+                status = "completed"
+        elif args.command == "ms2":
+            if args.ms2_command == "run":
+                run_id, status = start_ms2_run(
+                    args.phase, args.config, args.manifest, args.answer_key, args.artifacts_root
+                )
+            else:
+                run_id, status = resume_ms2_run(
+                    args.run_id, args.config, args.manifest, args.answer_key, args.artifacts_root
+                )
         elif args.command == "prepare":
             snapshots = [load_snapshot(path) for path in args.snapshot]
             prepared = prepare_sample_manifest(snapshots, load_sampling_plan(args.plan))
@@ -153,6 +199,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
     print(f"run_id={run_id}")
+    if status != "completed":
+        print(f"status={status}")
+        return 1
     return 0
 
 

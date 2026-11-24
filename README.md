@@ -20,6 +20,24 @@ uv run python -m ricl_experiment run `
   --manifest configs/examples/single-sample.json
 ```
 
+MS2 控制样例使用受控或真实 OpenAI-compatible endpoint，不把答案键传给生成请求：
+
+```powershell
+uv run python -m ricl_experiment ms2 run `
+  --phase pilot `
+  --config configs/models/default.toml `
+  --manifest <prepared-ms2-manifest.json> `
+  --answer-key <restricted/answer-key.json>
+
+uv run python -m ricl_experiment ms2 resume `
+  --run-id <run_id> `
+  --config configs/models/default.toml `
+  --manifest <prepared-ms2-manifest.json> `
+  --answer-key <restricted/answer-key.json>
+```
+
+每题预登记三个候选槽位；非空 Checkpoint 固定原样前缀并独立续推两次。轨迹写入 `traces/ms2.json`，答案键保存在 `restricted/answer-key.json`，续推请求只接收题面、原样 Checkpoint 和中性模板。统一旧入口也支持 `run --study ms2 --answer-key ...` 与对应的 `resume --study ms2`。
+
 成功或派发失败时都会显示 `run_id`。从原运行显式续跑，并传入原配置与清单：
 
 ```powershell
@@ -37,4 +55,4 @@ uv run python -m ricl_experiment resume `
 
 ## 当前范围
 
-`run` 和 `resume` 仍接受一个带 `sample_id` 与 `prompt` 的版本化 JSON 清单。Issue #15 增加本地固定快照准备 `prepare`、确认样本组排除导出 `exclude-groups` 和同阶段 MS2/MS3 重叠报告 `overlap`；操作说明见 [docs/dataset-manifests.md](docs/dataset-manifests.md)。Issue #20 增加离线可审计的 MS3 四组修复 `ms3-repair` 与分析 `analyze-ms3-repair`：运行时只对合格错误轨迹各派发 G0–G3 一次逻辑调用，工具关闭，标签和答案留在受限侧；分析只读取落盘评估，不调用模型。MS1/MS2/MS3 其余编排与绘图 CLI 仍属后续工单。研究架构和 artifact 边界见 [docs/README.md](docs/README.md)。
+旧 `run` 和 `resume` 仍接受一个带 `sample_id` 与 `prompt` 的单样例清单；MS2 控制入口接受准备好的多样本清单和分离的受限答案键。Issue #15 增加本地固定快照准备 `prepare`、确认样本组排除导出 `exclude-groups` 和同阶段 MS2/MS3 重叠报告 `overlap`；操作说明见 [docs/dataset-manifests.md](docs/dataset-manifests.md)。Issue #16 实现 Checkpoint、独立续推和独立答案判分引用；Issue #20 增加离线可审计的 MS3 四组修复 `ms3-repair` 与分析 `analyze-ms3-repair`：运行时只对合格错误轨迹各派发 G0–G3 一次逻辑调用，工具关闭，标签和答案留在受限侧；分析只读取落盘评估，不调用模型。Issue #17/#18 的证据评分与主 MS2 分析，以及其余 MS1/MS3 编排和绘图 CLI，仍属后续工单。研究架构和 artifact 边界见 [docs/README.md](docs/README.md)。

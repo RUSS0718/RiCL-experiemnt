@@ -84,11 +84,19 @@ class BudgetSettings(StrictModel):
     max_reserved_output_tokens: int = Field(ge=1)
 
 
+class MS2Settings(StrictModel):
+    """Frozen output caps for MS2 initial candidates and continuations."""
+
+    initial_max_tokens: int = Field(default=1500, ge=1)
+    continuation_max_tokens: int = Field(default=2000, ge=1)
+
+
 class RunConfig(StrictModel):
     """Complete frozen inputs for a model-backed run."""
 
     model: ModelSettings
     budget: BudgetSettings
+    ms2: MS2Settings = Field(default_factory=MS2Settings)
 
     @model_validator(mode="after")
     def validate_budget_covers_request(self) -> RunConfig:

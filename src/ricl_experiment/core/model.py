@@ -16,7 +16,7 @@ from .ledger import Ledger
 
 ROLE_FIELD_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "generation": ("problem",),
-    "continuation": ("problem", "checkpoint"),
+    "continuation": ("problem", "checkpoint", "instruction"),
     "rater": ("problem", "candidates"),
     "diagnosis": ("problem", "steps"),
     "repair": ("problem", "steps"),
@@ -57,6 +57,7 @@ def build_request_body(
         "reference_solution",
         "reference_material",
         "repair_instruction",
+        "instruction",
     ):
         if name in selected and not isinstance(selected[name], str):
             raise ValueError(f"{role} field {name} must be plain text")
@@ -77,6 +78,7 @@ def build_request_body(
             "reference_solution": "Reference solution",
             "reference_material": "Reference material",
             "repair_instruction": "Repair instruction",
+            "instruction": "Instruction",
         }
         sections = []
         for name, value in selected.items():
@@ -119,6 +121,38 @@ def dispatch_sample(
     )
 
 
+def dispatch_call(
+    config: RunConfig,
+    ledger: Ledger,
+    run_dir: Path,
+    call_id: str,
+    sample_id: str,
+    role: str,
+    visible_fields: dict[str, Any],
+    parameters: dict[str, Any] | None = None,
+) -> str:
+    """Build and send one role-isolated request with stage-specific parameters."""
+    model = config.model
+    effective_parameters = dict(model.parameters if parameters is None else parameters)
+    unsupported = effective_parameters.keys() - set(model.capabilities.supported_parameters)
+    missing = set(model.capabilities.required_parameters) - effective_parameters.keys()
+    if unsupported or missing:
+        raise ValueError("effective model parameters do not match configured capabilities")
+    max_tokens = effective_parameters.get("max_tokens")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1:
+        raise ValueError("effective max_tokens must be a positive integer")
+    request_body = build_request_body(model.model, role, visible_fields, effective_parameters)
+    return dispatch_request(
+        config,
+        ledger,
+        run_dir,
+        call_id,
+        sample_id,
+        request_body,
+        effective_parameters=effective_parameters,
+    )
+
+
 def dispatch_request(
     config: RunConfig,
     ledger: Ledger,
@@ -126,9 +160,12 @@ def dispatch_request(
     call_id: str,
     sample_id: str,
     request_body: dict[str, Any],
+    *,
+    effective_parameters: dict[str, Any] | None = None,
 ) -> str:
     """Send one isolated request through the shared audited transport."""
     model = config.model
+    effective_parameters = dict(model.parameters if effective_parameters is None else effective_parameters)
     request_fingerprint = fingerprint(request_body)
     ledger.ensure_call(call_id, sample_id, request_fingerprint)
     previous = ledger.result(call_id)
@@ -140,7 +177,7 @@ def dispatch_request(
         return recovered
     if ledger.call_status(call_id) == "failed":
         raise ModelDispatchError("logical call has a permanent failed attempt; start a new run")
-    reservation = int(model.parameters.get("max_tokens", 0))
+    reservation = int(effective_parameters.get("max_tokens", 0))
     key = os.environ.get(model.api_key_env) if model.api_key_env else None
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     endpoint = f"{model.base_url}/chat/completions"
@@ -151,7 +188,7 @@ def dispatch_request(
             attempt_id = ledger.start_attempt(
                 call_id,
                 request_fingerprint,
-                model.parameters,
+                effective_parameters,
                 reservation,
                 config.budget.max_attempts_per_call,
             )
@@ -225,6 +262,17 @@ def dispatch_request(
     raise ModelDispatchError(
         f"{last_error}; retry again with the same run_id if attempts remain"
     )
+
+
+def read_response(run_dir: Path, response_ref: str) -> dict[str, Any]:
+    """Read and validate a persisted chat completion without making another request."""
+    response_path = run_dir / response_ref
+    if response_path.is_symlink() or not response_path.is_file():
+        raise ValueError("response artifact is not a regular file")
+    payload = json.loads(response_path.read_bytes())
+    if not isinstance(payload, dict) or not _is_chat_completion(payload):
+        raise ValueError("response does not match chat completion shape")
+    return payload
 
 
 def _recover_saved_responses(ledger: Ledger, run_dir: Path, call_id: str) -> str | None:

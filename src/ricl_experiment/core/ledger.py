@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from pathlib import Path
@@ -85,6 +86,33 @@ class Ledger:
             "SELECT attempt_id, response_ref FROM analysis_results WHERE logical_call_id = ?",
             (call_id,),
         ).fetchone()
+
+    def call_audit(self, call_id: str) -> dict[str, Any]:
+        """Return persisted response ownership and attempt facts for one logical call."""
+        call = self.db.execute(
+            "SELECT logical_call_id, request_fingerprint, status, owner_attempt_id, response_ref "
+            "FROM logical_calls WHERE logical_call_id = ?",
+            (call_id,),
+        ).fetchone()
+        if call is None:
+            return {"logical_call_id": call_id, "status": "not_started", "attempts": []}
+        attempts = self.db.execute(
+            "SELECT attempt_id, attempt_number, status, request_fingerprint, "
+            "effective_parameters, reserved_output_tokens, usage_status, input_tokens, "
+            "output_tokens, reasoning_tokens, response_ref, error FROM attempts WHERE logical_call_id = ? "
+            "ORDER BY attempt_number",
+            (call_id,),
+        ).fetchall()
+        return {
+            **dict(call),
+            "attempts": [
+                {
+                    **dict(attempt),
+                    "effective_parameters": json.loads(attempt["effective_parameters"]),
+                }
+                for attempt in attempts
+            ],
+        }
 
     def call_status(self, call_id: str) -> str | None:
         """Return one logical call's state for resume retry decisions."""

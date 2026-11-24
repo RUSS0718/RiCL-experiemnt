@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 from .analysis.ms2 import write_ms2_analysis
+from .analysis.ms3_pilot import write_ms3_pilot_artifacts
 from .analysis.ms3_repair import analyze_repairs
 from .config import load_config, validate_api_key
 from .datasets.manifest import (
@@ -71,8 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
     ms2_resume = ms2_commands.add_parser("resume", help="resume frozen MS2 logical calls")
     _add_ms2_inputs(ms2_resume, resume=True)
     prepare = commands.add_parser(
-        "prepare",
-        help="freeze from local pinned snapshots without fetching data or calling a model",
+        "prepare", help="freeze from local pinned snapshots without fetching data or calling a model"
     )
     prepare.add_argument(
         "--snapshot",
@@ -125,6 +125,23 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--run", required=True, type=Path)
     analyze.add_argument("--audit", required=True, type=Path)
     analyze.add_argument("--output", required=True, type=Path)
+    pilot = commands.add_parser(
+        "ms3-pilot-check", help="verify frozen MS3 Pilot artifacts without calling a model"
+    )
+    pilot.add_argument("--manifest", required=True, type=Path)
+    pilot.add_argument("--audit", required=True, type=Path)
+    pilot.add_argument("--answer-key", required=True, type=Path)
+    pilot.add_argument("--diagnosis-run", required=True, type=Path)
+    pilot.add_argument("--diagnosis-analysis", required=True, type=Path)
+    pilot.add_argument("--repair-run", required=True, type=Path)
+    pilot.add_argument("--repair-analysis", required=True, type=Path)
+    pilot.add_argument("--output", required=True, type=Path)
+    pilot.add_argument("--plan-output", type=Path)
+    pilot.add_argument("--pricing", type=Path)
+    pilot.add_argument("--target-half-width", type=float, default=0.25)
+    pilot.add_argument("--restart-record", type=Path)
+    pilot.add_argument("--real-api-record", type=Path)
+    pilot.add_argument("--human-signoff-record", type=Path)
     ms2_analysis = commands.add_parser(
         "ms2-analyze", help="analyze a saved MS2 trace without model access"
     )
@@ -209,9 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path = args.output or args.run_dir / "metrics" / "ms3-repair.json"
             _write_json(output_path, report)
             print(f"analysis={output_path}")
-            print(
-                f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}"
-            )
+            print(f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}")
             return 0
         elif args.command == "ms3-diagnose":
             config = load_config(args.config)
@@ -235,6 +250,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"analysis={output_path}")
             print(f"coverage_figure={output_path.with_name(f'{output_path.stem}-coverage.png')}")
             return 0
+        elif args.command == "ms3-pilot-check":
+            pricing = None
+            if args.pricing is not None:
+                pricing = json.loads(args.pricing.read_text(encoding="utf-8"))
+                if not isinstance(pricing, dict):
+                    raise TypeError("pricing must be a JSON object")
+            paths = write_ms3_pilot_artifacts(
+                args.manifest,
+                args.audit,
+                args.answer_key,
+                args.diagnosis_run,
+                args.diagnosis_analysis,
+                args.repair_run,
+                args.repair_analysis,
+                args.output,
+                plan_output=args.plan_output,
+                pricing=pricing,
+                target_half_width=args.target_half_width,
+                restart_record=args.restart_record,
+                real_api_record=args.real_api_record,
+                human_signoff_record=args.human_signoff_record,
+            )
+            status = json.loads(args.output.read_text(encoding="utf-8"))["status"]
+            print(f"status={status}")
+            print(f"status_artifact={paths['status']}")
+            print(f"planning_artifact={paths['plan']}")
+            return 0 if status == "engineering_gate_passed" else 2
         elif args.command == "exclude-groups":
             output_path = export_question_group_exclusions(args.manifest, args.output)
             print(f"exclusions={output_path}")

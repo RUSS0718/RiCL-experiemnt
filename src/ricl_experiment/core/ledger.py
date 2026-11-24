@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS attempts (
     usage_status TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
+    reasoning_tokens INTEGER,
     response_ref TEXT,
     error TEXT,
     duplicate_billing_risk INTEGER NOT NULL DEFAULT 0,
@@ -57,6 +58,9 @@ class Ledger:
         self.db = sqlite3.connect(path, timeout=30, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(_SCHEMA)
+        attempt_columns = {row[1] for row in self.db.execute("PRAGMA table_info(attempts)")}
+        if "reasoning_tokens" not in attempt_columns:
+            self.db.execute("ALTER TABLE attempts ADD COLUMN reasoning_tokens INTEGER")
 
     def close(self) -> None:
         """Close the SQLite connection."""
@@ -169,16 +173,16 @@ class Ledger:
         attempt_id: str,
         status: str,
         error: str,
-        usage: tuple[int, int] | None,
+        usage: tuple[int, ...] | None,
         response_ref: str | None = None,
     ) -> None:
         """Persist a failed or retryable send and keep unconfirmed usage reserved."""
-        input_tokens, output_tokens = usage if usage is not None else (None, None)
+        input_tokens, output_tokens, reasoning_tokens = _usage_values(usage)
         self.db.execute("BEGIN IMMEDIATE")
         try:
             self.db.execute(
                 "UPDATE attempts SET status = ?, error = ?, usage_status = ?, input_tokens = ?, "
-                "output_tokens = ?, response_ref = ?, completed_at = CURRENT_TIMESTAMP "
+                "output_tokens = ?, reasoning_tokens = ?, response_ref = ?, completed_at = CURRENT_TIMESTAMP "
                 "WHERE attempt_id = ?",
                 (
                     status,
@@ -186,6 +190,7 @@ class Ledger:
                     "known" if usage is not None else "unknown",
                     input_tokens,
                     output_tokens,
+                    reasoning_tokens,
                     response_ref,
                     attempt_id,
                 ),
@@ -209,20 +214,21 @@ class Ledger:
         call_id: str,
         attempt_id: str,
         response_ref: str,
-        usage: tuple[int, int] | None,
+        usage: tuple[int, ...] | None,
     ) -> None:
         """Record every received response and assign at most one analysis result."""
-        input_tokens, output_tokens = usage if usage is not None else (None, None)
+        input_tokens, output_tokens, reasoning_tokens = _usage_values(usage)
         self.db.execute("BEGIN IMMEDIATE")
         try:
             self.db.execute(
                 "UPDATE attempts SET status = 'completed', usage_status = ?, input_tokens = ?, "
-                "output_tokens = ?, response_ref = ?, error = NULL, "
+                "output_tokens = ?, reasoning_tokens = ?, response_ref = ?, error = NULL, "
                 "completed_at = CURRENT_TIMESTAMP WHERE attempt_id = ?",
                 (
                     "known" if usage is not None else "unknown",
                     input_tokens,
                     output_tokens,
+                    reasoning_tokens,
                     response_ref,
                     attempt_id,
                 ),
@@ -274,3 +280,14 @@ class Ledger:
             "unknown_usage_attempts": row["unknown_attempts"] or 0,
         }
 
+
+
+def _usage_values(usage: tuple[int, ...] | None) -> tuple[int | None, int | None, int | None]:
+    """Normalize legacy and extended token-usage tuples for ledger writes."""
+    if usage is None:
+        return None, None, None
+    if len(usage) == 2:
+        return usage[0], usage[1], None
+    if len(usage) == 3:
+        return usage[0], usage[1], usage[2]
+    raise ValueError("token usage must contain input, output, and optional reasoning counts")

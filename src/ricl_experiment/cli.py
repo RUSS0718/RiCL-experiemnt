@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import uuid
 from pathlib import Path
 
+from .analysis.ms3_repair import analyze_repairs
+from .config import load_config, validate_api_key
 from .datasets.manifest import (
     export_question_group_exclusions,
     load_sampling_plan,
@@ -14,6 +18,7 @@ from .datasets.manifest import (
     write_overlap_report,
     write_prepared_manifest,
 )
+from .motivation.ms3_repair import run_ms3_repair
 from .runner import resume_run, start_run
 
 
@@ -60,6 +65,25 @@ def build_parser() -> argparse.ArgumentParser:
     overlap.add_argument("--left", required=True, type=Path)
     overlap.add_argument("--right", required=True, type=Path)
     overlap.add_argument("--output", required=True, type=Path)
+    repair = commands.add_parser(
+        "ms3-repair", help="run blinded G0-G3 repairs on a frozen MS3 sample"
+    )
+    repair.add_argument("--snapshot", required=True, type=Path)
+    repair.add_argument("--manifest", required=True, type=Path)
+    repair.add_argument("--audit", required=True, type=Path)
+    repair.add_argument("--answer-key", required=True, type=Path)
+    repair.add_argument("--config", required=True, type=Path)
+    repair.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
+    repair.add_argument("--seed", type=int)
+    repair.add_argument("--max-new-tokens", type=int)
+    analysis = commands.add_parser(
+        "analyze-ms3-repair", help="analyze blinded MS3 evaluations offline"
+    )
+    analysis.add_argument("--run-dir", required=True, type=Path)
+    analysis.add_argument("--evaluations", type=Path)
+    analysis.add_argument("--output", type=Path)
+    analysis.add_argument("--bootstrap-samples", type=int, default=1000)
+    analysis.add_argument("--seed", type=int, default=0)
     return parser
 
 
@@ -83,6 +107,40 @@ def main(argv: list[str] | None = None) -> int:
             print(f"answer_key={paths['answer-key']}")
             print(f"fingerprint={prepared.manifest['fingerprint']}")
             return 0
+        elif args.command == "ms3-repair":
+            config = load_config(args.config)
+            validate_api_key(config)
+            run_id = uuid.uuid4().hex
+            run_dir = args.artifacts_root.resolve() / "motivation" / run_id
+            result = run_ms3_repair(
+                config,
+                args.snapshot,
+                args.manifest,
+                args.audit,
+                args.answer_key,
+                run_dir,
+                seed=args.seed,
+                max_new_tokens=args.max_new_tokens,
+            )
+            print(f"run_id={run_id}")
+            print(f"run_dir={run_dir}")
+            print(f"calls={len(result['assignments'])}")
+            print(f"usage={json.dumps(result['usage'], sort_keys=True)}")
+            return 0
+        elif args.command == "analyze-ms3-repair":
+            evaluations_path = args.evaluations or args.run_dir / "blind" / "evaluations.jsonl"
+            assignments_path = args.run_dir / "restricted" / "assignments.json"
+            report = analyze_repairs(
+                _read_jsonl(evaluations_path),
+                json.loads(assignments_path.read_text(encoding="utf-8")),
+                bootstrap_samples=args.bootstrap_samples,
+                seed=args.seed,
+            )
+            output_path = args.output or args.run_dir / "metrics" / "ms3-repair.json"
+            _write_json(output_path, report)
+            print(f"analysis={output_path}")
+            print(f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}")
+            return 0
         elif args.command == "exclude-groups":
             output_path = export_question_group_exclusions(args.manifest, args.output)
             print(f"exclusions={output_path}")
@@ -96,3 +154,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     print(f"run_id={run_id}")
     return 0
+
+
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    """Read nonblank JSONL records for deterministic offline analysis."""
+    rows = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise TypeError(f"JSONL row {number} must be an object")
+        rows.append(row)
+    return rows
+
+
+def _write_json(path: Path, value: object) -> None:
+    """Atomically write a UTF-8 JSON analysis artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)

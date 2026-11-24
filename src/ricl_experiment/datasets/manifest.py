@@ -655,6 +655,7 @@ def _answer_key_row(row: Mapping[str, Any], record: Mapping[str, Any]) -> dict[s
             {
                 "reference_material": record.get("reference_material"),
                 "expert_label": record["label"],
+                "steps": _preserved_processbench_steps(record.get("steps")),
                 "final_answer_correct": record["final_answer_correct"],
             }
         )
@@ -772,3 +773,12 @@ def _exclusion(
     if reasons is not None:
         result["reasons"] = list(reasons)
     return result
+
+
+def _preserved_processbench_steps(value: Any) -> list[str]:
+    """Keep source step text byte-for-byte within each non-empty parsed step."""
+    if isinstance(value, (list, tuple)):
+        return [step for step in value if isinstance(step, str) and step.strip()]
+    if isinstance(value, str):
+        return [line for line in value.splitlines() if line.strip()]
+    return []

@@ -21,6 +21,7 @@ ROLE_FIELD_ALLOWLIST: dict[str, tuple[str, ...]] = {
     "diagnosis": ("problem", "steps"),
     "repair": ("problem", "steps"),
     "oracle_repair": ("problem", "steps", "first_error_position"),
+    "ms3_repair": ("problem", "steps", "repair_instruction"),
     "independent_evaluation": (
         "problem", "candidate_output", "reference_answer", "reference_solution"
     ),
@@ -55,6 +56,7 @@ def build_request_body(
         "reference_answer",
         "reference_solution",
         "reference_material",
+        "repair_instruction",
     ):
         if name in selected and not isinstance(selected[name], str):
             raise ValueError(f"{role} field {name} must be plain text")
@@ -74,6 +76,7 @@ def build_request_body(
             "reference_answer": "Reference answer",
             "reference_solution": "Reference solution",
             "reference_material": "Reference material",
+            "repair_instruction": "Repair instruction",
         }
         sections = []
         for name, value in selected.items():
@@ -106,8 +109,28 @@ def dispatch_sample(
     request_body = build_request_body(
         model.model, "generation", {"problem": sample.prompt}, model.parameters
     )
+    return dispatch_request(
+        config,
+        ledger,
+        run_dir,
+        call_id,
+        sample.sample_id,
+        request_body,
+    )
+
+
+def dispatch_request(
+    config: RunConfig,
+    ledger: Ledger,
+    run_dir: Path,
+    call_id: str,
+    sample_id: str,
+    request_body: dict[str, Any],
+) -> str:
+    """Send one isolated request through the shared audited transport."""
+    model = config.model
     request_fingerprint = fingerprint(request_body)
-    ledger.ensure_call(call_id, sample.sample_id, request_fingerprint)
+    ledger.ensure_call(call_id, sample_id, request_fingerprint)
     previous = ledger.result(call_id)
     if previous is not None:
         return str(previous["response_ref"])
@@ -244,8 +267,8 @@ def _is_chat_completion(payload: dict[str, Any]) -> bool:
     return isinstance(message, dict) and isinstance(message.get("content"), str)
 
 
-def _usage(payload: dict[str, Any]) -> tuple[int, int] | None:
-    """Extract validated OpenAI usage values when both token counts are present."""
+def _usage(payload: dict[str, Any]) -> tuple[int, int, int | None] | None:
+    """Extract validated input, output, and optional reasoning token counts."""
     usage = payload.get("usage")
     if not isinstance(usage, dict):
         return None
@@ -260,7 +283,15 @@ def _usage(payload: dict[str, Any]) -> tuple[int, int] | None:
         or output_tokens < 0
     ):
         return None
-    return input_tokens, output_tokens
+    details = usage.get("completion_tokens_details")
+    reasoning_tokens = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if reasoning_tokens is not None and (
+        isinstance(reasoning_tokens, bool)
+        or not isinstance(reasoning_tokens, int)
+        or reasoning_tokens < 0
+    ):
+        reasoning_tokens = None
+    return input_tokens, output_tokens, reasoning_tokens
 
 
 def _save_response(run_dir: Path, attempt_id: str, content: bytes) -> str:

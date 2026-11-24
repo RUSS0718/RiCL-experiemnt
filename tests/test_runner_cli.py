@@ -16,6 +16,11 @@ import pytest
 
 from ricl_experiment.config import fingerprint, load_config, load_manifest
 from ricl_experiment.core.ledger import Ledger
+from ricl_experiment.runner import resume_run, start_run
+
+
+class SimulatedProcessExit(BaseException):
+    """Stop dispatch at a durable crash boundary without runner exception handling."""
 
 
 class ControlledEndpoint(BaseHTTPRequestHandler):
@@ -212,6 +217,13 @@ def test_run_dispatches_and_persists_auditable_single_sample(tmp_path, controlle
     assert metadata["status"] == "completed"
     assert metadata["request_summary"]["roles"] == ["user"]
     assert metadata["effective_parameters"] == {"max_tokens": 32, "temperature": 0}
+    assert metadata["experiment_commit_sha"] == subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
     assert "local-test-secret" not in metadata_text
     assert "What is 6 times 7?" not in metadata_text
 
@@ -585,3 +597,187 @@ def test_permanent_http_failure_is_audited_and_not_retried_on_resume(tmp_path, c
     assert resumed.returncode == 2
     assert "permanent failed attempt" in resumed.stderr
     assert len(ControlledEndpoint.requests) == 1
+
+
+
+
+def _start_crashed_run(tmp_path, endpoint, monkeypatch, method, *, commit_before_exit):
+    """Create a run and stop at a simulated durable crash boundary."""
+    config_path, manifest_path, artifacts = write_inputs(tmp_path, endpoint)
+    monkeypatch.setenv("CONTROLLED_API_KEY", "local-test-secret")
+    original = getattr(Ledger, method)
+
+    def exit_at_durable_boundary(self, *args, **kwargs):
+        if commit_before_exit:
+            original(self, *args, **kwargs)
+        raise SimulatedProcessExit
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Ledger, method, exit_at_durable_boundary)
+        with pytest.raises(SimulatedProcessExit):
+            start_run("ms2", "pilot", config_path, manifest_path, artifacts)
+    return config_path, manifest_path, artifacts, next((artifacts / "motivation").iterdir())
+
+
+@pytest.mark.parametrize(
+    ("status_code", "attempt_status", "billing_risk"),
+    [(429, "retryable", 0), (503, "unknown", 1)],
+)
+def test_resume_retries_transient_http_failure_after_process_exit(
+    tmp_path, controlled_endpoint, monkeypatch, status_code, attempt_status, billing_risk
+):
+    ControlledEndpoint.status_sequence = [status_code, 200]
+    config, manifest, artifacts, run_dir = _start_crashed_run(
+        tmp_path, controlled_endpoint, monkeypatch, "record_failure", commit_before_exit=True
+    )
+
+    resume_run(run_dir.name, config, manifest, artifacts)
+
+    with sqlite3.connect(run_dir / "run.sqlite3") as db:
+        attempts = db.execute(
+            "SELECT attempt_id, status, duplicate_billing_risk, response_ref "
+            "FROM attempts ORDER BY attempt_number"
+        ).fetchall()
+        result = db.execute(
+            "SELECT attempt_id, response_ref FROM analysis_results WHERE logical_call_id = "
+            "(SELECT logical_call_id FROM attempts LIMIT 1)"
+        ).fetchone()
+    assert attempts[0][1:3] == (attempt_status, billing_risk)
+    assert attempts[1][1:3] == ("completed", 0)
+    assert result == attempts[1][::3]
+    assert len(ControlledEndpoint.requests) == 2
+
+
+def test_resume_claims_complete_response_saved_before_ledger_commit(
+    tmp_path, controlled_endpoint, monkeypatch
+):
+    config, manifest, artifacts, run_dir = _start_crashed_run(
+        tmp_path, controlled_endpoint, monkeypatch, "record_response", commit_before_exit=False
+    )
+    with sqlite3.connect(run_dir / "run.sqlite3") as db:
+        attempt_id, status, response_ref = db.execute(
+            "SELECT attempt_id, status, response_ref FROM attempts"
+        ).fetchone()
+    expected_ref = f"responses/{attempt_id}.json"
+    assert (run_dir / expected_ref).is_file() and status == "pending" and response_ref is None
+
+    resume_run(run_dir.name, config, manifest, artifacts)
+
+    with sqlite3.connect(run_dir / "run.sqlite3") as db:
+        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
+        attempt = db.execute(
+            "SELECT status, usage_status, input_tokens, output_tokens, response_ref FROM attempts"
+        ).fetchone()
+        call = db.execute("SELECT owner_attempt_id, response_ref FROM logical_calls").fetchone()
+        result = db.execute("SELECT attempt_id, response_ref FROM analysis_results").fetchone()
+    assert attempt == ("completed", "known", 7, 3, expected_ref)
+    assert call == result == (attempt_id, expected_ref)
+    assert len(ControlledEndpoint.requests) == 1
+
+
+@pytest.mark.parametrize("artifact_state", ["incomplete", "invalid_shape", "unmatched"])
+def test_resume_audits_and_retries_incomplete_or_unmatched_response_files(
+    tmp_path, controlled_endpoint, monkeypatch, artifact_state
+):
+    ControlledEndpoint.status_sequence = [200, 200]
+    config, manifest, artifacts, run_dir = _start_crashed_run(
+        tmp_path, controlled_endpoint, monkeypatch, "record_response", commit_before_exit=False
+    )
+    with sqlite3.connect(run_dir / "run.sqlite3") as db:
+        attempt_id = db.execute("SELECT attempt_id FROM attempts").fetchone()[0]
+    expected_file = run_dir / "responses" / f"{attempt_id}.json"
+    unrelated_file = run_dir / "responses" / "unrelated.json"
+    if artifact_state == "incomplete":
+        expected_file.write_text('{"choices":', encoding="utf-8")
+    elif artifact_state == "invalid_shape":
+        expected_file.write_text('{"choices": []}', encoding="utf-8")
+    if artifact_state != "unmatched":
+        unrelated_file.write_text(
+            json.dumps({"choices": [{"message": {"content": "unrelated"}}]}),
+            encoding="utf-8",
+        )
+    else:
+        expected_file.replace(unrelated_file)
+
+    resume_run(run_dir.name, config, manifest, artifacts)
+
+    with sqlite3.connect(run_dir / "run.sqlite3") as db:
+        attempts = db.execute(
+            "SELECT attempt_id, status, usage_status, reserved_output_tokens, output_tokens, "
+            "response_ref, error FROM attempts ORDER BY attempt_number"
+        ).fetchall()
+        owner = db.execute("SELECT owner_attempt_id, response_ref FROM logical_calls").fetchone()
+        result_count = db.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0]
+    assert attempts[0][0:3] == (attempt_id, "unknown", "unknown")
+    assert attempts[0][5] == (
+        f"responses/{attempt_id}.json" if artifact_state != "unmatched" else None
+    )
+    if artifact_state != "unmatched":
+        assert "invalid persisted response" in attempts[0][6]
+    assert attempts[1][1:5] == ("completed", "known", 32, 3)
+    assert owner == (attempts[1][0], attempts[1][5])
+    assert result_count == 1 and len(ControlledEndpoint.requests) == 2
+
+
+@pytest.mark.parametrize(
+    ("max_attempts", "budget", "error_text"),
+    [(1, 64, "attempt limit"), (2, 32, "output-token budget exhausted")],
+)
+def test_transient_failure_resume_remains_within_attempt_and_budget_limits(
+    tmp_path, controlled_endpoint, max_attempts, budget, error_text
+):
+    ControlledEndpoint.status_code = 429
+    config, manifest, artifacts = write_inputs(tmp_path, controlled_endpoint)
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        .replace("max_attempts_per_call = 2", f"max_attempts_per_call = {max_attempts}")
+        .replace("max_reserved_output_tokens = 64", f"max_reserved_output_tokens = {budget}"),
+        encoding="utf-8",
+    )
+    env = {**os.environ, "CONTROLLED_API_KEY": "local-test-secret"}
+    started = start_command(config, manifest, artifacts, env)
+    assert started.returncode == 2
+    run_id = next((artifacts / "motivation").iterdir()).name
+    resumed = invoke_cli(
+        "resume", "--run-id", run_id, "--config", str(config), "--manifest", str(manifest),
+        "--artifacts-root", str(artifacts), env=env,
+    )
+    assert resumed.returncode == 2 and error_text in resumed.stderr
+    with sqlite3.connect(artifacts / "motivation" / run_id / "run.sqlite3") as db:
+        assert db.execute("SELECT status FROM attempts").fetchall() == [("retryable",)]
+    assert len(ControlledEndpoint.requests) == 1
+
+
+def test_experiment_commit_sha_marks_git_unavailable_explicitly(monkeypatch):
+    from ricl_experiment import runner
+
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError("git executable is unavailable")
+
+    monkeypatch.setattr(runner.subprocess, "run", missing_git)
+    assert runner._experiment_commit_sha() == "unavailable"
+
+
+def test_resume_keeps_permanent_http_failure_after_an_earlier_transient(
+    tmp_path, controlled_endpoint
+):
+    ControlledEndpoint.status_sequence = [503, 400, 200]
+    config, manifest, artifacts = write_inputs(tmp_path, controlled_endpoint)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "max_attempts_per_call = 2", "max_attempts_per_call = 3"
+        ),
+        encoding="utf-8",
+    )
+    env = {**os.environ, "CONTROLLED_API_KEY": "local-test-secret"}
+    started = start_command(config, manifest, artifacts, env)
+    assert started.returncode == 2
+    run_id = next((artifacts / "motivation").iterdir()).name
+
+    resumed = invoke_cli(
+        "resume", "--run-id", run_id, "--config", str(config), "--manifest", str(manifest),
+        "--artifacts-root", str(artifacts), env=env,
+    )
+
+    assert resumed.returncode == 2 and "permanent failed attempt" in resumed.stderr
+    assert len(ControlledEndpoint.requests) == 2

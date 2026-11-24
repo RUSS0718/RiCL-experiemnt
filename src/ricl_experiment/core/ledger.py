@@ -98,10 +98,19 @@ class Ledger:
         )
         self.db.execute(
             "UPDATE logical_calls SET status = 'unknown' "
-            "WHERE logical_call_id = ? AND owner_attempt_id IS NULL "
+            "WHERE logical_call_id = ? AND owner_attempt_id IS NULL AND status != 'failed' "
             "AND EXISTS (SELECT 1 FROM attempts WHERE logical_call_id = ? AND status = 'unknown')",
             (call_id, call_id),
         )
+
+    def unrecorded_attempts(self, call_id: str) -> list[sqlite3.Row]:
+        """Return unresolved attempts that may have an uncommitted response file."""
+        return self.db.execute(
+            "SELECT attempt_id FROM attempts WHERE logical_call_id = ? "
+            "AND status IN ('pending', 'unknown') AND response_ref IS NULL "
+            "ORDER BY attempt_number",
+            (call_id,),
+        ).fetchall()
 
     def start_attempt(
         self,
@@ -163,7 +172,7 @@ class Ledger:
         usage: tuple[int, int] | None,
         response_ref: str | None = None,
     ) -> None:
-        """Persist a failed send and keep its reservation when usage is unconfirmed."""
+        """Persist a failed or retryable send and keep unconfirmed usage reserved."""
         input_tokens, output_tokens = usage if usage is not None else (None, None)
         self.db.execute("BEGIN IMMEDIATE")
         try:

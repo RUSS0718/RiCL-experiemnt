@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,9 @@ def dispatch_sample(
     if previous is not None:
         return str(previous["response_ref"])
     ledger.recover_interrupted_attempts(call_id)
+    recovered = _recover_saved_responses(ledger, run_dir, call_id)
+    if recovered is not None:
+        return recovered
     if ledger.call_status(call_id) == "failed":
         raise ModelDispatchError("logical call has a permanent failed attempt; start a new run")
     reservation = int(model.parameters.get("max_tokens", 0))
@@ -82,9 +86,10 @@ def dispatch_sample(
                 return response_ref
             code = response.status_code
             transient = code >= 500 or code == 429
+            status = "unknown" if code >= 500 else "retryable" if code == 429 else "failed"
             ledger.record_failure(
                 attempt_id,
-                "unknown" if code >= 500 else "failed",
+                status,
                 f"HTTP {code}; elapsed_ms={elapsed_ms}; response_ref={response_ref}",
                 usage=usage,
                 response_ref=response_ref,
@@ -124,6 +129,37 @@ def dispatch_sample(
     raise ModelDispatchError(
         f"{last_error}; retry again with the same run_id if attempts remain"
     )
+
+
+def _recover_saved_responses(ledger: Ledger, run_dir: Path, call_id: str) -> str | None:
+    """Claim a complete response only from its unresolved attempt's exact artifact path."""
+    response_dir = run_dir / "responses"
+    for row in ledger.unrecorded_attempts(call_id):
+        attempt_id = row["attempt_id"]
+        if not isinstance(attempt_id, str) or not re.fullmatch(r"[a-f0-9]{32}", attempt_id):
+            continue
+        response_ref = f"responses/{attempt_id}.json"
+        response_path = run_dir / response_ref
+        if not response_path.exists() and not response_path.is_symlink():
+            continue
+        try:
+            if response_dir.is_symlink() or response_path.is_symlink() or not response_path.is_file():
+                raise ValueError("response artifact is not a regular attempt file")
+            payload = json.loads(response_path.read_bytes())
+            if not isinstance(payload, dict) or not _is_chat_completion(payload):
+                raise ValueError("response does not match chat completion shape")
+        except (OSError, ValueError) as error:
+            ledger.record_failure(
+                attempt_id,
+                "unknown",
+                f"invalid persisted response: {type(error).__name__}",
+                usage=None,
+                response_ref=response_ref,
+            )
+            continue
+        ledger.record_response(call_id, attempt_id, response_ref, _usage(payload))
+        return response_ref
+    return None
 
 
 def _is_chat_completion(payload: dict[str, Any]) -> bool:

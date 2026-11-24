@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -84,6 +85,7 @@ def _metadata(
         "study": study,
         "phase": phase,
         "created_at": datetime.now(UTC).isoformat(),
+        "experiment_commit_sha": _experiment_commit_sha(),
         "status": "created",
         "config_fingerprint": fingerprint(config.redacted()),
         "manifest_fingerprint": fingerprint(manifest.model_dump(mode="json")),
@@ -95,6 +97,22 @@ def _metadata(
         "effective_parameters": config.model.parameters,
         "redacted_config": config.redacted(),
     }
+
+
+def _experiment_commit_sha() -> str:
+    """Return this experiment repository's commit, or an explicit missing marker."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    commit_sha = result.stdout.strip()
+    return commit_sha if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit_sha) else "unavailable"
 
 
 def _execute(

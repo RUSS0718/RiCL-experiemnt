@@ -8,6 +8,7 @@ import sys
 import uuid
 from pathlib import Path
 
+from .analysis.ms2 import write_ms2_analysis
 from .analysis.ms3_repair import analyze_repairs
 from .config import load_config, validate_api_key
 from .datasets.manifest import (
@@ -123,6 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--run", required=True, type=Path)
     analyze.add_argument("--audit", required=True, type=Path)
     analyze.add_argument("--output", required=True, type=Path)
+    ms2_analysis = commands.add_parser(
+        "ms2-analyze", help="analyze a saved MS2 trace without model access"
+    )
+    ms2_analysis.add_argument("--trace", required=True, type=Path)
+    ms2_analysis.add_argument("--output", required=True, type=Path)
+    ms2_analysis.add_argument("--scoring-dir", type=Path)
+    ms2_analysis.add_argument("--bootstrap-samples", type=int, default=10_000)
+    ms2_analysis.add_argument("--seed", type=int, default=2026)
     return parser
 
 
@@ -210,6 +219,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if run["status"] == "completed" else 2
         elif args.command == "ms3-analyze":
             output_path = write_analysis(args.run, args.audit, args.output)
+            print(f"analysis={output_path}")
+            return 0
+        elif args.command == "ms2-analyze":
+            output_path = write_ms2_analysis(
+                args.trace,
+                args.output,
+                scoring_dir=args.scoring_dir,
+                bootstrap_replicates=args.bootstrap_samples,
+                seed=args.seed,
+            )
             print(f"analysis={output_path}")
             return 0
         elif args.command == "exclude-groups":

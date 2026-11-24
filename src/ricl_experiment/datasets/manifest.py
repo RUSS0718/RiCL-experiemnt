@@ -591,7 +591,7 @@ def _public_row(
             f"{source_record_id}:{trajectory_source_id}".encode()
         ).hexdigest()[:24]
     sample_id = "sample-" + hashlib.sha256(source_record_id.encode("utf-8")).hexdigest()[:24]
-    return {
+    public_row = {
         "sample_id": sample_id,
         "problem": problem,
         "source": snapshot.source,
@@ -639,6 +639,13 @@ def _public_row(
             else []
         ),
     }
+    if snapshot.source == "processbench":
+        raw_steps = record.get("steps")
+        if isinstance(raw_steps, (list, tuple)):
+            public_row["steps"] = list(raw_steps)
+        elif isinstance(raw_steps, str):
+            public_row["steps"] = [step for step in raw_steps.splitlines() if step.strip()]
+    return public_row
 
 
 def _without_private_record(row: Mapping[str, Any]) -> dict[str, Any]:

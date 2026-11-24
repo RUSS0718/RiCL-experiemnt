@@ -37,4 +37,4 @@ uv run python -m ricl_experiment resume `
 
 ## 当前范围
 
-`run` 和 `resume` 目前只接受一个带 `sample_id` 与 `prompt` 的版本化 JSON 清单。数据集准备、MS1/MS2/MS3 编排、分析与绘图 CLI 仍属于后续工单。研究架构和 artifact 边界见 [docs/README.md](docs/README.md)。
+`run` 和 `resume` 目前只接受一个带 `sample_id` 与 `prompt` 的版本化 JSON 清单。Issue #15 增加本地固定快照准备 `prepare`、确认样本组排除导出 `exclude-groups` 和同阶段 MS2/MS3 重叠报告 `overlap`；操作说明见 [docs/dataset-manifests.md](docs/dataset-manifests.md)。准备好的多样本清单尚未接入批量 Study 执行。MS1/MS2/MS3 编排、分析与绘图 CLI 仍属后续工单。研究架构和 artifact 边界见 [docs/README.md](docs/README.md)。

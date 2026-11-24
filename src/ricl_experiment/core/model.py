@@ -14,6 +14,81 @@ import httpx
 from ..config import RunConfig, Sample, fingerprint
 from .ledger import Ledger
 
+ROLE_FIELD_ALLOWLIST: dict[str, tuple[str, ...]] = {
+    "generation": ("problem",),
+    "continuation": ("problem", "checkpoint"),
+    "rater": ("problem", "candidates"),
+    "diagnosis": ("problem", "steps"),
+    "repair": ("problem", "steps"),
+    "oracle_repair": ("problem", "steps", "first_error_position"),
+    "independent_evaluation": (
+        "problem", "candidate_output", "reference_answer", "reference_solution"
+    ),
+    "blind_review": ("problem", "candidate_output", "reference_material"),
+}
+
+
+def build_request_body(
+    model: str, role: str, visible_fields: dict[str, Any], parameters: dict[str, Any]
+) -> dict[str, Any]:
+    """Serialize only allowlisted values into the actual OpenAI-compatible request shape."""
+    if role not in ROLE_FIELD_ALLOWLIST:
+        raise ValueError(f"unknown request role: {role}")
+    if not isinstance(visible_fields.get("problem"), str) or not visible_fields["problem"].strip():
+        raise ValueError(f"{role} request requires a non-empty problem")
+    if {"model", "messages"} & parameters.keys():
+        raise ValueError("model parameters cannot replace role-isolated request fields")
+    selected = {
+        name: visible_fields[name]
+        for name in ROLE_FIELD_ALLOWLIST[role]
+        if name in visible_fields and visible_fields[name] is not None
+    }
+    for name in ("steps", "candidates"):
+        if name in selected and (
+            not isinstance(selected[name], (list, tuple))
+            or any(not isinstance(item, str) for item in selected[name])
+        ):
+            raise ValueError(f"{role} field {name} must contain only anonymous text")
+    for name in (
+        "checkpoint",
+        "candidate_output",
+        "reference_answer",
+        "reference_solution",
+        "reference_material",
+    ):
+        if name in selected and not isinstance(selected[name], str):
+            raise ValueError(f"{role} field {name} must be plain text")
+    position = selected.get("first_error_position")
+    if position is not None and (isinstance(position, bool) or not isinstance(position, int) or position < 0):
+        raise ValueError("first_error_position must be a non-negative integer")
+    if role == "generation":
+        content = selected["problem"]
+    else:
+        labels = {
+            "problem": "Problem",
+            "checkpoint": "Checkpoint",
+            "candidates": "Anonymous candidates",
+            "steps": "Trace steps",
+            "first_error_position": "First-error position",
+            "candidate_output": "Candidate output",
+            "reference_answer": "Reference answer",
+            "reference_solution": "Reference solution",
+            "reference_material": "Reference material",
+        }
+        sections = []
+        for name, value in selected.items():
+            if isinstance(value, (list, tuple)):
+                rendered = "\n".join(value)
+            else:
+                rendered = str(value)
+            sections.append(f"{labels[name]}:\n{rendered}")
+        content = "\n\n".join(sections)
+    return {
+        **parameters,
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+    }
+
 
 class ModelDispatchError(RuntimeError):
     """Raised when a call cannot complete within configured attempt or budget limits."""
@@ -28,11 +103,9 @@ def dispatch_sample(
 ) -> str:
     """Send one user-only request, recording attempts and the first durable response."""
     model = config.model
-    request_body = {
-        "model": model.model,
-        "messages": [{"role": "user", "content": sample.prompt}],
-        **model.parameters,
-    }
+    request_body = build_request_body(
+        model.model, "generation", {"problem": sample.prompt}, model.parameters
+    )
     request_fingerprint = fingerprint(request_body)
     ledger.ensure_call(call_id, sample.sample_id, request_fingerprint)
     previous = ledger.result(call_id)

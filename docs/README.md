@@ -1,6 +1,7 @@
 # Research documentation map
 
 - [Architecture](architecture.md): selected stack, target modules, run artifact contract, CLI, and data/role boundaries.
+- [Dataset manifests](dataset-manifests.md): fixed local snapshots, sampling plans, restricted artifacts, identity review, and ProcessBench/answer-evaluation boundaries.
 - `protocol.md`: frozen study protocols and changes that affect study interpretation; create it when the protocol is transcribed from the issue decisions.
 - `decisions/`: concise records for new protocol or architecture decisions when they cannot be captured by the existing issue history.
 

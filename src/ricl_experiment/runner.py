@@ -23,7 +23,7 @@ from .config import (
     validate_resume_inputs,
 )
 from .core.ledger import Ledger
-from .core.model import ModelDispatchError, dispatch_sample
+from .core.model import ModelDispatchError, build_request_body, dispatch_sample
 
 
 class RunLockError(RuntimeError):
@@ -129,11 +129,9 @@ def _execute(
             "sample_index": 0,
         }
     )
-    request = {
-        "model": config.model.model,
-        "messages": [{"role": "user", "content": sample.prompt}],
-        **config.model.parameters,
-    }
+    request = build_request_body(
+        config.model.model, "generation", {"problem": sample.prompt}, config.model.parameters
+    )
     metadata["request_summary"] = {
         "logical_call_id": call_id,
         "sample_id": sample.sample_id,

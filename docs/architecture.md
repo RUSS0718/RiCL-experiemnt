@@ -1,6 +1,6 @@
 # Architecture and workflow
 
-This document preserves the agreed bootstrap choices and target contracts. Issue #14 implements the first vertical slice: a configurable, single-sample `run`/`resume` CLI with HTTPX dispatch and SQLite auditing. Dataset preparation, study orchestration, analysis, and plotting remain future slices; absent modules are added with their owning issues, not as empty placeholders.
+This document preserves the agreed bootstrap choices and target contracts. Issue #14 implements the first vertical slice: a configurable, single-sample `run`/`resume` CLI with HTTPX dispatch and SQLite auditing. Issue #15 adds local fixed-snapshot preparation and independent answer/ProcessBench audit artifacts. Prepared manifests are not yet consumed by multi-sample study orchestration; analysis and plotting remain future slices.
 
 ## Selected stack
 
@@ -93,6 +93,6 @@ uv run python -m ricl_experiment run --study ms2 --phase pilot --config configs/
 uv run python -m ricl_experiment resume --run-id <run_id> --config configs/models/default.toml --manifest configs/examples/single-sample.json
 ```
 
-`run` and `resume` share validated TOML/JSON configuration. The initial runner accepts exactly one manifest sample. `prepare`, `analyze`, and `plot`, plus study-specific multi-sample orchestration, remain future issue slices. Static model capabilities are checked before dispatch. Resume requires the original `run_id` and rejects changed config, manifest, or prompt fingerprints. Each HTTP send has a committed attempt row and output-token reservation first; unknown usage remains reserved. Responses and the unique logical-call analysis owner are committed in SQLite, and only one scheduler process may hold a run at a time.
+`prepare`, `exclude-groups`, and `overlap` create blinded manifests and offline audit exports from local pinned snapshots; see [dataset-manifests.md](dataset-manifests.md). `run` and `resume` share validated TOML/JSON configuration. The initial runner accepts exactly one manifest sample. `analyze` and `plot`, plus study-specific multi-sample orchestration, remain future issue slices. Static model capabilities are checked before dispatch. Resume requires the original `run_id` and rejects changed config, manifest, or prompt fingerprints. Each HTTP send has a committed attempt row and output-token reservation first; unknown usage remains reserved. Responses and the unique logical-call analysis owner are committed in SQLite, and only one scheduler process may hold a run at a time.
 
 Model requests must be built from role-specific allowlists. Standard answers, expert labels, independent evaluations, and future outcomes remain unavailable to generation/rating roles except for protocol-defined oracle conditions. Test the actual serialized request, not only an internal role declaration.

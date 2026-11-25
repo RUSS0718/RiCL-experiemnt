@@ -429,3 +429,17 @@ def test_ms2_resume_reuses_completed_calls_and_trace(tmp_path, ms2_endpoint):
     assert len(MS2ControlledEndpoint.requests) == 9
     after_trace = json.loads(trace_path.read_text(encoding="utf-8"))
     assert after_trace["samples"] == before_trace["samples"]
+
+
+
+def test_adjustment_checkpoint_detects_explicit_numeric_result_in_prose():
+    from ricl_experiment.evaluation.answer import classify_answer
+    from ricl_experiment.motivation.ms2 import _prefix_for_answer_evaluation
+
+    prefix = r"We stop here as instructed: the result is \(23\), without a final answer line."
+    control = r"Here is a local result: the sum is \(23\)."
+    assert classify_answer(_prefix_for_answer_evaluation(prefix, "adjustment_validation"), "23").status == "correct"
+    assert _prefix_for_answer_evaluation(control, "adjustment_validation") == control
+    assert _prefix_for_answer_evaluation(prefix, "pilot") == prefix
+    conflicting = prefix + "\nFinal answer: 24"
+    assert classify_answer(_prefix_for_answer_evaluation(conflicting, "adjustment_validation"), "23").status == "blind_review"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +44,13 @@ ADJUSTMENT_GENERATION_INSTRUCTIONS = (
     "Show relevant reasoning and intermediate work, but stop before the final answer. "
     "Do not include a final-answer line or state the final result. End at a meaningful, unfinished step."
 )
+ADJUSTMENT_EARLY_ANSWER_RULE = "ms2-prose-result-v1"
+_PROSE_RESULT = re.compile(
+    r"\bthe (?:final answer|result) is\s+"
+    r"(?:\\\(([+-]?\d+(?:\.\d+)?)\\\)|\$([+-]?\d+(?:\.\d+)?)\$|"
+    r"([+-]?\d+(?:\.\d+)?))(?=\s*(?:[,;.!?](?!\d)|$))",
+    re.IGNORECASE,
+)
 ADJUSTMENT_CONTINUATION_INSTRUCTIONS = (
     "Continue the visible work, correct it if needed, and finish with exactly one final line "
     "in this format: Final answer: <answer>. Do not provide alternative or duplicate final answers."
@@ -79,8 +87,20 @@ def _generation_prompt_fingerprint(manifest: MS2Manifest) -> str:
     return fingerprint({
         "template_version": _generation_template_version(manifest),
         "instruction": ADJUSTMENT_GENERATION_INSTRUCTIONS,
+        "early_answer_rule": ADJUSTMENT_EARLY_ANSWER_RULE,
         "problems": [sample.problem for sample in manifest.samples],
     })
+
+
+def _prefix_for_answer_evaluation(prefix: str, phase: str) -> str:
+    """Expose explicit numeric prose results to the existing answer classifier."""
+    if phase != "adjustment_validation":
+        return prefix
+    markers = [
+        f"Final answer: {next(value for value in match.groups() if value is not None)}"
+        for match in _PROSE_RESULT.finditer(prefix)
+    ]
+    return "\n".join([prefix, *markers])
 
 
 class MS2RunError(RuntimeError):
@@ -274,7 +294,10 @@ def _execute(
                 candidate.update(
                     _checkpoint(candidate_id, generation_id, prefix, response_ref, payload, stop_reason, True)
                 )
-                decision = classify_answer(prefix, answer.reference_answer)
+                evaluation_prefix = _prefix_for_answer_evaluation(prefix, manifest.phase)
+                decision = classify_answer(evaluation_prefix, answer.reference_answer)
+                if evaluation_prefix != prefix:
+                    candidate["visible_final_answer"] = True
                 category = {
                     "correct": "early_correct",
                     "incorrect": "early_incorrect",

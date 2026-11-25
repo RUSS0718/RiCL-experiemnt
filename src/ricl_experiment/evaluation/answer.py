@@ -242,6 +242,8 @@ def _explicit_answer_mentions(output: str | None) -> list[tuple[int, str]]:
     )
     for match in marker.finditer(output):
         answer = (match.group(1) or match.group(2)).strip()
+        if answer.startswith(r"\(") and answer.endswith(r"\)"):
+            answer = answer[2:-2].strip()
         if not answer or re.fullmatch(r"\\boxed\s*\{.*\}", answer):
             continue
         mentions.append((match.end(), answer))

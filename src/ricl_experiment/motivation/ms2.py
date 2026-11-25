@@ -32,10 +32,55 @@ from .schemas import (
     empty_rollout,
 )
 
+GENERATION_TEMPLATE_VERSION = "ms2-generation-v1"
+ADJUSTMENT_GENERATION_TEMPLATE_VERSION = "ms2-adjustment-checkpoint-v1"
 CONTINUATION_TEMPLATE_VERSION = "ms2-neutral-continuation-v1"
+ADJUSTMENT_CONTINUATION_TEMPLATE_VERSION = "ms2-neutral-continuation-v2"
 CONTINUATION_INSTRUCTIONS = (
     "Inspect the visible work, continue or correct it as needed, and explicitly state a final answer."
 )
+ADJUSTMENT_GENERATION_INSTRUCTIONS = (
+    "Show relevant reasoning and intermediate work, but stop before the final answer. "
+    "Do not include a final-answer line or state the final result. End at a meaningful, unfinished step."
+)
+ADJUSTMENT_CONTINUATION_INSTRUCTIONS = (
+    "Continue the visible work, correct it if needed, and finish with exactly one final line "
+    "in this format: Final answer: <answer>. Do not provide alternative or duplicate final answers."
+)
+
+
+def _generation_template_version(manifest: MS2Manifest) -> str:
+    return (
+        ADJUSTMENT_GENERATION_TEMPLATE_VERSION
+        if manifest.phase == "adjustment_validation"
+        else GENERATION_TEMPLATE_VERSION
+    )
+
+
+def _continuation_template_version(manifest: MS2Manifest) -> str:
+    return (
+        ADJUSTMENT_CONTINUATION_TEMPLATE_VERSION
+        if manifest.phase == "adjustment_validation"
+        else CONTINUATION_TEMPLATE_VERSION
+    )
+
+
+def _continuation_instructions(manifest: MS2Manifest) -> str:
+    return (
+        ADJUSTMENT_CONTINUATION_INSTRUCTIONS
+        if manifest.phase == "adjustment_validation"
+        else CONTINUATION_INSTRUCTIONS
+    )
+
+
+def _generation_prompt_fingerprint(manifest: MS2Manifest) -> str:
+    if manifest.phase != "adjustment_validation":
+        return fingerprint([sample.problem for sample in manifest.samples])
+    return fingerprint({
+        "template_version": _generation_template_version(manifest),
+        "instruction": ADJUSTMENT_GENERATION_INSTRUCTIONS,
+        "problems": [sample.problem for sample in manifest.samples],
+    })
 
 
 class MS2RunError(RuntimeError):
@@ -91,9 +136,14 @@ def resume_ms2_run(
         "manifest_fingerprint",
         "answer_key_fingerprint",
         "prompt_fingerprint",
+        "generation_template_version",
         "continuation_template_version",
         "scoring_template_versions",
     ):
+        if key == "generation_template_version" and key not in metadata:
+            if metadata.get("phase") == "adjustment_validation":
+                raise MS2RunError("resume rejected: generation template version is missing")
+            continue
         if metadata.get(key) != expected[key]:
             raise MS2RunError(f"resume rejected: {key} does not match the original run")
     if metadata.get("run_id") != run_id:
@@ -159,6 +209,9 @@ def _execute(
                 generation_id = _logical_call_id(run_id, candidate_id, "initial")
                 generation_parameters = _parameters(config, config.ms2.initial_max_tokens)
                 _seed(generation_parameters, config, manifest, generation_id)
+                generation_fields = {"problem": sample.problem}
+                if manifest.phase == "adjustment_validation":
+                    generation_fields["instruction"] = ADJUSTMENT_GENERATION_INSTRUCTIONS
                 try:
                     response_ref = dispatch_call(
                         config,
@@ -167,7 +220,7 @@ def _execute(
                         generation_id,
                         sample.sample_id,
                         "generation",
-                        {"problem": sample.problem},
+                        generation_fields,
                         generation_parameters,
                     )
                     payload = read_response(run_dir, response_ref)
@@ -259,6 +312,7 @@ def _execute(
                             problem=sample.problem,
                             checkpoint=prefix,
                             review_extracted_claims=True,
+                            json_evidence=manifest.phase == "adjustment_validation",
                         )
                         candidate["scoring_artifact_ref"] = score["artifact_ref"]
                     except ModelDispatchError as error:
@@ -295,7 +349,7 @@ def _execute(
                                 {
                                     "problem": sample.problem,
                                     "checkpoint": prefix,
-                                    "instruction": CONTINUATION_INSTRUCTIONS,
+                                    "instruction": _continuation_instructions(manifest),
                                 },
                                 parameters,
                             )
@@ -362,7 +416,18 @@ def _execute(
             for candidate in sample_trace["candidates"]:
                 MS2CandidateTrace.model_validate(candidate)
         ledger.close_run(status)
-        trace = base_trace(run_id, manifest, fingerprint(manifest.model_dump(mode="json")))
+        trace = base_trace(
+            run_id,
+            manifest,
+            fingerprint(manifest.model_dump(mode="json")),
+            generation_template_version=_generation_template_version(manifest),
+            generation_instructions=(
+                ADJUSTMENT_GENERATION_INSTRUCTIONS
+                if manifest.phase == "adjustment_validation" else None
+            ),
+            continuation_template_version=_continuation_template_version(manifest),
+            continuation_instructions=_continuation_instructions(manifest),
+        )
         trace["samples"] = exported_samples
         trace["usage"] = ledger.usage_summary()
         trace = MS2Trace.model_validate(trace).model_dump(mode="json")
@@ -588,15 +653,22 @@ def _metadata(
         "config_fingerprint": fingerprint(config.redacted()),
         "manifest_fingerprint": fingerprint(manifest_data),
         "answer_key_fingerprint": hashlib.sha256(answer_bytes).hexdigest(),
-        "prompt_fingerprint": fingerprint([sample.problem for sample in manifest.samples]),
+        "prompt_fingerprint": _generation_prompt_fingerprint(manifest),
+        "generation_template_version": _generation_template_version(manifest),
         "experiment_id": manifest.manifest_id,
         "model": config.model.model,
         "endpoint": config.model.base_url,
         "effective_parameters": config.model.parameters,
         "ms2_parameters": config.ms2.model_dump(mode="json"),
-        "continuation_template_version": CONTINUATION_TEMPLATE_VERSION,
+        "continuation_template_version": _continuation_template_version(manifest),
         "scoring_template_versions": (
-            [RATER_TEMPLATE_VERSION, EVIDENCE_TEMPLATE_VERSION, EVIDENCE_REVIEW_TEMPLATE_VERSION]
+            [
+                RATER_TEMPLATE_VERSION,
+                "ms2-evidence-extraction-json-v1",
+                "ms2-evidence-review-json-v1",
+            ]
+            if config.ms2.score_checkpoints and manifest.phase == "adjustment_validation"
+            else [RATER_TEMPLATE_VERSION, EVIDENCE_TEMPLATE_VERSION, EVIDENCE_REVIEW_TEMPLATE_VERSION]
             if config.ms2.score_checkpoints else None
         ),
         "redacted_config": config.redacted(),

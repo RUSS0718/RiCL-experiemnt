@@ -15,7 +15,7 @@ from ..config import RunConfig, Sample, fingerprint
 from .ledger import Ledger
 
 ROLE_FIELD_ALLOWLIST: dict[str, tuple[str, ...]] = {
-    "generation": ("problem",),
+    "generation": ("problem", "instruction"),
     "continuation": ("problem", "checkpoint", "instruction"),
     "rater": ("problem", "candidates"),
     "diagnosis": ("problem", "steps"),
@@ -66,6 +66,8 @@ def build_request_body(
         raise ValueError("first_error_position must be a non-negative integer")
     if role == "generation":
         content = selected["problem"]
+        if "instruction" in selected:
+            content += f"\n\nInstruction:\n{selected['instruction']}"
     else:
         labels = {
             "problem": "Problem",

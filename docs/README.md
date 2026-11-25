@@ -4,6 +4,7 @@
 - [Dataset manifests](dataset-manifests.md): fixed local snapshots, sampling plans, restricted artifacts, identity review, and ProcessBench/answer-evaluation boundaries.
 - [MS3 Pilot acceptance](ms3-pilot-acceptance.md): offline engineering gate, leakage/ledger/recompute checks, and sample-size/cost planning.
 - [MS1 dependency analysis](ms1-dependency.md): offline MS2-trace sampling, blind dependency annotation imports, reconciliation, metrics, and case exports.
+- [MS2 adjustment validation](ms2-adjustment-validation.md): the isolated, phase-versioned checkpoint, continuation, and evidence JSON protocol.
 - `protocol.md`: frozen study protocols and changes that affect study interpretation; create it when the protocol is transcribed from the issue decisions.
 - `decisions/`: concise records for new protocol or architecture decisions when they cannot be captured by the existing issue history.
 

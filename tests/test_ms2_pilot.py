@@ -233,6 +233,17 @@ def test_pilot_metrics_use_only_eligible_routes_and_read_live_scoring_artifacts(
     assert not second_topic["main_complete"]
 
 
+def test_pilot_report_reports_the_frozen_manifest_phase() -> None:
+    manifest = _manifest()
+    manifest["phase"] = "adjustment_validation"
+    trace, scoring = _trace_and_scoring()
+    trace["phase"] = "adjustment_validation"
+
+    report = build_pilot_report(manifest, trace, scoring=scoring)
+
+    assert report["phase"] == "adjustment_validation"
+
+
 def test_pilot_report_distinguishes_engineering_ready_from_external_blockers() -> None:
     manifest = _manifest()
     trace, scoring = _trace_and_scoring()

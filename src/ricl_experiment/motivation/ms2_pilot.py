@@ -106,7 +106,7 @@ def build_pilot_report(
     report = {
         "schema_version": 1,
         "study": "ms2",
-        "phase": "pilot",
+        "phase": manifest["phase"],
         "status": _status(engineering_ready, bool(blockers)),
         "engineering_ready": engineering_ready,
         "external_blocked": bool(blockers),

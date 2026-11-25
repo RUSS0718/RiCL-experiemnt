@@ -157,6 +157,8 @@ class MS2Trace(BaseModel):
     manifest_fingerprint: str
     candidate_slots: Literal[3]
     rollouts_per_checkpoint: Literal[2]
+    generation_template_version: str = "ms2-generation-v1"
+    generation_instructions: str | None = None
     continuation_template_version: str
     samples: list[dict[str, Any]]
     usage: dict[str, int]
@@ -179,7 +181,19 @@ def empty_rollout(index: int, prefix_fingerprint: str, reason: str) -> dict[str,
     }
 
 
-def base_trace(run_id: str, manifest: MS2Manifest, manifest_fingerprint: str) -> dict[str, Any]:
+def base_trace(
+    run_id: str,
+    manifest: MS2Manifest,
+    manifest_fingerprint: str,
+    *,
+    generation_template_version: str = "ms2-generation-v1",
+    generation_instructions: str | None = None,
+    continuation_template_version: str = "ms2-neutral-continuation-v1",
+    continuation_instructions: str = (
+        "Inspect the visible work, continue or correct it as needed, "
+        "and explicitly state a final answer."
+    ),
+) -> dict[str, Any]:
     """Create the top-level JSON export envelope."""
     return {
         "schema_version": 1,
@@ -190,10 +204,9 @@ def base_trace(run_id: str, manifest: MS2Manifest, manifest_fingerprint: str) ->
         "manifest_fingerprint": manifest_fingerprint,
         "candidate_slots": 3,
         "rollouts_per_checkpoint": 2,
-        "continuation_template_version": "ms2-neutral-continuation-v1",
-        "continuation_instructions": (
-            "Inspect the visible work, continue or correct it as needed, "
-            "and explicitly state a final answer."
-        ),
+        "generation_template_version": generation_template_version,
+        "generation_instructions": generation_instructions,
+        "continuation_template_version": continuation_template_version,
+        "continuation_instructions": continuation_instructions,
         "samples": [],
     }

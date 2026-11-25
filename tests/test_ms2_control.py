@@ -14,6 +14,7 @@ from typing import ClassVar
 import pytest
 
 from ricl_experiment.cli import main
+from ricl_experiment.config import fingerprint
 
 
 class MS2ControlledEndpoint(BaseHTTPRequestHandler):
@@ -53,6 +54,9 @@ class MS2ControlledEndpoint(BaseHTTPRequestHandler):
                 if request_index == self.empty_candidate_index:
                     response_text = ""
                     finish_reason = "length"
+                elif "stop before the final answer" in content:
+                    response_text = "The polynomial separates into an even part and an odd term."
+                    finish_reason = "stop"
                 elif request_index == 0:
                     response_text = "Step one.\nFinal answer: 42"
                     finish_reason = "stop"
@@ -114,7 +118,7 @@ def ms2_endpoint():
 
 
 def write_ms2_inputs(
-    tmp_path: Path, endpoint: str, *, budget: int = 72
+    tmp_path: Path, endpoint: str, *, budget: int = 72, phase: str = "pilot"
 ) -> tuple[Path, Path, Path, Path]:
     config = tmp_path / "model.toml"
     config.write_text(
@@ -151,7 +155,7 @@ def write_ms2_inputs(
                 "schema_version": 1,
                 "manifest_id": "ms2-controlled",
                 "study": "ms2",
-                "phase": "pilot",
+                "phase": phase,
                 "samples": [
                     {
                         "sample_id": "sample-1",
@@ -181,7 +185,8 @@ def run_ms2(
 ) -> subprocess.CompletedProcess[str]:
     args = [sys.executable, "-m", "ricl_experiment", "ms2", command]
     if command == "run":
-        args += ["--phase", "pilot"]
+        phase = json.loads(manifest.read_text(encoding="utf-8"))["phase"]
+        args += ["--phase", phase]
     else:
         args += ["--run-id", run_id or ""]
     args += [
@@ -227,6 +232,90 @@ def test_ms2_cli_commits_blinded_scoring_before_continuations(tmp_path, ms2_endp
     assert gate["leakage_audit"]["status"] == "pass"
     assert gate["leakage_audit"]["request_count"] == 18
     assert gate["evidence_diagnostics"]["valid_scores"] == 3
+
+
+def test_adjustment_validation_freezes_checkpoint_and_json_evidence_contract(tmp_path, ms2_endpoint):
+    config, manifest, answer_key, artifacts = write_ms2_inputs(
+        tmp_path, ms2_endpoint, budget=144, phase="adjustment_validation"
+    )
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("[ms2]", "[ms2]\nscore_checkpoints = true"),
+        encoding="utf-8",
+    )
+
+    result = run_ms2("run", config, manifest, answer_key, artifacts)
+    assert result.returncode == 0, result.stderr
+    run_id = result.stdout.strip().removeprefix("run_id=")
+    run_dir = artifacts / "motivation" / run_id
+    trace = json.loads((run_dir / "traces" / "ms2.json").read_text(encoding="utf-8"))
+    metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+
+    generation = [
+        item["body"] for item in MS2ControlledEndpoint.requests
+        if "stop before the final answer" in item["body"]["messages"][0]["content"]
+    ]
+    continuation = [
+        item["body"] for item in MS2ControlledEndpoint.requests
+        if item["body"]["messages"][0]["content"].startswith("Problem:")
+        and "Instruction:\nContinue the visible work" in item["body"]["messages"][0]["content"]
+    ]
+    evidence = [
+        item["body"] for item in MS2ControlledEndpoint.requests
+        if "Evidence instructions:" in item["body"]["messages"][0]["content"]
+    ]
+    reviews = [
+        item["body"] for item in MS2ControlledEndpoint.requests
+        if "Independent evidence review:" in item["body"]["messages"][0]["content"]
+    ]
+    raters = [
+        item["body"] for item in MS2ControlledEndpoint.requests
+        if "Rater instructions:" in item["body"]["messages"][0]["content"]
+    ]
+
+    assert len(generation) == 3
+    assert all(
+        "Do not include a final-answer line" in body["messages"][0]["content"]
+        for body in generation
+    )
+    assert "reference_answer" not in json.dumps(generation)
+    assert len(continuation) == 6
+    assert all(
+        body["messages"][0]["content"].endswith(
+            "Instruction:\nContinue the visible work, correct it if needed, and finish with exactly one final line in this format: Final answer: <answer>. Do not provide alternative or duplicate final answers."
+        )
+        for body in continuation
+    )
+    assert len(evidence) == 3
+    assert len(reviews) == 3
+    assert all('"claims"' in body["messages"][0]["content"] and "json" in body["messages"][0]["content"] for body in evidence)
+    assert all('"reviews"' in body["messages"][0]["content"] and "json" in body["messages"][0]["content"] for body in reviews)
+    assert len(raters) == 3
+    assert all(
+        body["response_format"] == {"type": "json_object"} for body in [*evidence, *reviews]
+    )
+    assert all("response_format" not in body for body in raters)
+    assert all(
+        not candidate["prefix_text"].lower().count("final answer")
+        for candidate in trace["samples"][0]["candidates"]
+    )
+    assert trace["generation_template_version"] == "ms2-adjustment-checkpoint-v1"
+    assert "stop before the final answer" in trace["generation_instructions"].lower()
+    assert trace["continuation_template_version"] == "ms2-neutral-continuation-v2"
+    assert metadata["generation_template_version"] == trace["generation_template_version"]
+    assert metadata["prompt_fingerprint"] != fingerprint(["What is 6 times 7?"])
+    assert metadata["scoring_template_versions"][1] == "ms2-evidence-extraction-json-v1"
+    assert metadata["scoring_template_versions"][2] == "ms2-evidence-review-json-v1"
+
+    score = json.loads(
+        (run_dir / trace["samples"][0]["candidates"][0]["scoring_artifact_ref"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert score["templates"]["evidence"] == "ms2-evidence-extraction-json-v1"
+    assert score["templates"]["evidence_review"] == "ms2-evidence-review-json-v1"
+    before_resume = len(MS2ControlledEndpoint.requests)
+    assert run_ms2("resume", config, manifest, answer_key, artifacts, run_id).returncode == 0
+    assert len(MS2ControlledEndpoint.requests) == before_resume
 
 
 def test_ms2_cli_keeps_three_routes_and_two_isolated_rollouts(tmp_path, ms2_endpoint):
@@ -327,10 +416,16 @@ def test_ms2_resume_reuses_completed_calls_and_trace(tmp_path, ms2_endpoint):
     started = run_ms2("run", config, manifest, answer_key, artifacts)
     assert started.returncode == 0, started.stderr
     run_id = started.stdout.strip().removeprefix("run_id=")
-    trace_path = artifacts / "motivation" / run_id / "traces" / "ms2.json"
-    before = trace_path.read_bytes()
+    run_dir = artifacts / "motivation" / run_id
+    trace_path = run_dir / "traces" / "ms2.json"
+    before_trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    metadata_path = run_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("generation_template_version")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     resumed = run_ms2("resume", config, manifest, answer_key, artifacts, run_id)
     assert resumed.returncode == 0, resumed.stderr
     assert len(MS2ControlledEndpoint.requests) == 9
-    assert trace_path.read_bytes() == before
+    after_trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert after_trace["samples"] == before_trace["samples"]

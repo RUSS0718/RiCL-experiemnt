@@ -83,6 +83,98 @@ def _diagnosis_reply():
     return DiagnosisReply(content, raw, {"input_tokens": 11, "output_tokens": 7}, 1)
 
 
+def test_httpx_diagnosis_transport_honors_proxy_and_records_http_status(monkeypatch):
+    """Route live diagnosis requests through the explicit proxy and retain HTTP status."""
+
+    from ricl_experiment.motivation.ms3.protocol import HttpxDiagnosisTransport
+
+    observed = {}
+
+    class SuccessfulResponse:
+        status_code = 201
+        is_success = True
+        content = b"response"
+
+        @staticmethod
+        def json():
+            return {
+                "choices": [{"message": {"content": "{\"has_error\":false,\"first_error_step\":null}"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            }
+
+    class RecordingClient:
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            return SuccessfulResponse()
+
+    config = RunConfig.model_validate(
+        {
+            "model": {
+                "base_url": "https://provider.example/v1",
+                "model": "fixture",
+                "capabilities": {"supported_parameters": ["max_tokens"], "required_parameters": ["max_tokens"]},
+                "parameters": {"max_tokens": 16},
+            },
+            "budget": {"max_attempts_per_call": 1, "max_reserved_output_tokens": 16},
+        }
+    )
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:33210")
+    monkeypatch.setattr("ricl_experiment.motivation.ms3.protocol.httpx.Client", RecordingClient)
+
+    reply = HttpxDiagnosisTransport(config).send({"model": "fixture", "messages": []})
+
+    assert observed["trust_env"] is False
+    assert observed["proxy"] == "http://127.0.0.1:33210"
+    assert reply.http_status_code == 201
+
+def test_run_diagnosis_records_provider_http_status(tmp_path: Path, diagnosis_endpoint: str):
+    """Keep 5xx status visible while leaving provider usage as observed or unknown."""
+    config = RunConfig.model_validate(
+        {
+            "model": {
+                "base_url": diagnosis_endpoint,
+                "model": "local-test-model",
+                "capabilities": {"supported_parameters": ["max_tokens"], "required_parameters": ["max_tokens"]},
+                "parameters": {"max_tokens": 64},
+            },
+            "budget": {"max_attempts_per_call": 1, "max_reserved_output_tokens": 512},
+        }
+    )
+    manifest = {
+        "study": "ms3",
+        "manifest_id": "http-status-fixture",
+        "fingerprint": "http-status-digest",
+        "samples": [
+            {
+                "sample_id": "s",
+                "source": "processbench",
+                "trajectory_id": "t",
+                "question_group_id": "q",
+                "problem": "Problem",
+                "steps": ["step one", "step two"],
+            }
+        ],
+    }
+    DiagnosisEndpoint.status_code = 524
+
+    run = run_diagnosis(config, manifest, tmp_path / "http-status-run")
+
+    assert run["status"] == "incomplete"
+    for method in METHODS:
+        result = run["methods"][method["id"]][0]
+        assert result["status"] == "api_failure"
+        assert result["http_status_code"] == 524
+        assert result["usage"]["status"] == "known"
+
+
 def test_parse_diagnosis_accepts_all_four_contract_states():
     """Accept alarm, no-error, and abstention structures with legal positions."""
     assert parse_diagnosis('{"has_error":true,"first_error_step":0}', 2) == (

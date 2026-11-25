@@ -217,6 +217,7 @@ def _run_one_call(
             request_summary,
             response_ref,
             len(ledger.call_audit(call_id)["attempts"]),
+            http_status_code=None,
         )
     if ledger.call_status(call_id) == "failed":
         return _result(
@@ -228,6 +229,7 @@ def _run_one_call(
     last_usage = None
     last_response_ref = None
     last_elapsed_ms = None
+    last_http_status_code = None
     attempts = len(ledger.call_audit(call_id)["attempts"])
     failure_status = "run_failure"
     failure_classification = "run_failure"
@@ -268,9 +270,11 @@ def _run_one_call(
                 request_summary,
                 response_ref,
                 attempts,
+                http_status_code=reply.http_status_code,
             )
         except DiagnosisRuntimeError as error:
             last_error = f"{type(error).__name__}: {error}"
+            last_http_status_code = None
             failure_status = "run_failure"
             failure_classification = "run_failure"
             last_elapsed_ms = error.elapsed_ms
@@ -279,6 +283,7 @@ def _run_one_call(
             last_error = f"{type(error).__name__}: {error}"
             last_usage = error.usage
             last_elapsed_ms = error.elapsed_ms
+            last_http_status_code = error.http_status_code
             failure_status = "api_failure"
             failure_classification = "api_failure"
             response_ref = None
@@ -298,6 +303,7 @@ def _run_one_call(
                 break
         except (OSError, RuntimeError, ValueError, TypeError) as error:
             last_error = f"{type(error).__name__}: {error}"
+            last_http_status_code = None
             failure_status = "run_failure"
             failure_classification = "run_failure"
             ledger.record_failure(attempt_id, "unknown", last_error, usage=None)
@@ -314,6 +320,7 @@ def _run_one_call(
         request_summary,
         last_response_ref,
         attempts,
+        http_status_code=last_http_status_code,
     )
 
 
@@ -330,6 +337,8 @@ def _result(
     request: dict[str, Any],
     response_ref: str | None,
     attempts: int,
+    *,
+    http_status_code: int | None = None,
 ) -> dict[str, Any]:
     """Build one JSON-safe per-method audit row."""
     return {
@@ -343,6 +352,7 @@ def _result(
         "raw_output": raw_output,
         "usage": _usage_record(usage),
         "elapsed_ms": elapsed_ms,
+        "http_status_code": http_status_code,
         "request": request,
         "response_ref": response_ref,
         "attempts": attempts,

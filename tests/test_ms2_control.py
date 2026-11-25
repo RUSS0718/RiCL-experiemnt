@@ -27,7 +27,20 @@ class MS2ControlledEndpoint(BaseHTTPRequestHandler):
         with self.request_lock:
             is_continuation = "Checkpoint:" in content
             handler_type = type(self)
-            if is_continuation:
+            if "Rater instructions:" in content:
+                request_index, finish_reason = -1, "stop"
+                response_text = '{"rating": 2, "rationale": "Uses the relevant equation."}'
+            elif "Evidence instructions:" in content:
+                request_index, finish_reason = -1, "stop"
+                response_text = '{"claims": [{"assertion": "The equation can be evaluated."}]}'
+            elif "Independent evidence review:" in content:
+                request_index, finish_reason = -1, "stop"
+                response_text = (
+                    '{"reviews":[{"claim_id":"extracted-0","verdict":"verified",'
+                    '"source_locator":"Step one","conditions_sufficient":true,'
+                    '"rationale":"The operations are defined on integers.","milestone":2}]}'
+                )
+            elif is_continuation:
                 request_index = handler_type.continuation_count
                 handler_type.continuation_count += 1
                 response_text = f"Continuation {request_index}\nFinal answer: 42"
@@ -180,6 +193,33 @@ def run_ms2(
         str(artifacts),
     ]
     return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+def test_ms2_cli_commits_blinded_scoring_before_continuations(tmp_path, ms2_endpoint):
+    config, manifest, answer_key, artifacts = write_ms2_inputs(tmp_path, ms2_endpoint, budget=144)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace("[ms2]", "[ms2]\nscore_checkpoints = true"),
+        encoding="utf-8",
+    )
+    result = run_ms2("run", config, manifest, answer_key, artifacts)
+    assert result.returncode == 0, result.stderr
+    run_id = result.stdout.strip().removeprefix("run_id=")
+    requests = [row["body"]["messages"][0]["content"] for row in MS2ControlledEndpoint.requests]
+    assert len(requests) == 18
+    assert "Rater instructions:" in requests[1]
+    assert "Evidence instructions:" in requests[2]
+    assert "Independent evidence review:" in requests[3]
+    assert '"rating"' not in requests[3]
+    assert "Instruction:" in requests[4]
+    run_dir = artifacts / "motivation" / run_id
+    trace = json.loads((run_dir / "traces" / "ms2.json").read_text(encoding="utf-8"))
+    candidate = trace["samples"][0]["candidates"][0]
+    score = json.loads((run_dir / candidate["scoring_artifact_ref"]).read_text(encoding="utf-8"))
+    assert score["verified_progress"]["score"] == 2
+    assert score["verified_progress"]["claims"][0]["primary_provenance"] == "Agent-Assessed"
+    assert score["associated_outcomes"] == []
+    assert run_ms2("resume", config, manifest, answer_key, artifacts, run_id).returncode == 0
+    assert len(MS2ControlledEndpoint.requests) == 18
 
 
 def test_ms2_cli_keeps_three_routes_and_two_isolated_rollouts(tmp_path, ms2_endpoint):

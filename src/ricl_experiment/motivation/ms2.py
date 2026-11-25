@@ -17,6 +17,12 @@ from ..core.ledger import Ledger
 from ..core.model import ModelDispatchError, dispatch_call, read_response
 from ..evaluation.answer import classify_answer, extract_final_answer
 from ..runner import _experiment_commit_sha, _run_lock
+from .ms2_scoring import (
+    EVIDENCE_REVIEW_TEMPLATE_VERSION,
+    EVIDENCE_TEMPLATE_VERSION,
+    RATER_TEMPLATE_VERSION,
+    score_ms2_checkpoint,
+)
 from .schemas import (
     MS2AnswerKeyRow,
     MS2CandidateTrace,
@@ -86,6 +92,7 @@ def resume_ms2_run(
         "answer_key_fingerprint",
         "prompt_fingerprint",
         "continuation_template_version",
+        "scoring_template_versions",
     ):
         if metadata.get(key) != expected[key]:
             raise MS2RunError(f"resume rejected: {key} does not match the original run")
@@ -242,6 +249,21 @@ def _execute(
                         "text": prefix,
                     }
                 ]
+                if config.ms2.score_checkpoints and prefix.strip():
+                    try:
+                        score = score_ms2_checkpoint(
+                            config, ledger, run_dir,
+                            run_id=run_id,
+                            sample_id=sample.sample_id,
+                            route_id=route_id,
+                            problem=sample.problem,
+                            checkpoint=prefix,
+                            review_extracted_claims=True,
+                        )
+                        candidate["scoring_artifact_ref"] = score["artifact_ref"]
+                    except ModelDispatchError as error:
+                        failed_calls = True
+                        candidate["scoring_failure"] = str(error)
                 for rollout_index in range(2):
                     rollout_id = _logical_call_id(
                         run_id, candidate["checkpoint_id"], f"rollout-{rollout_index}"
@@ -573,6 +595,10 @@ def _metadata(
         "effective_parameters": config.model.parameters,
         "ms2_parameters": config.ms2.model_dump(mode="json"),
         "continuation_template_version": CONTINUATION_TEMPLATE_VERSION,
+        "scoring_template_versions": (
+            [RATER_TEMPLATE_VERSION, EVIDENCE_TEMPLATE_VERSION, EVIDENCE_REVIEW_TEMPLATE_VERSION]
+            if config.ms2.score_checkpoints else None
+        ),
         "redacted_config": config.redacted(),
     }
 

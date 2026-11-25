@@ -19,7 +19,8 @@ from ..evaluation.evidence import (
 )
 
 RATER_TEMPLATE_VERSION = "ms2-llm-rater-v1"
-EVIDENCE_TEMPLATE_VERSION = "ms2-evidence-extraction-v1"
+EVIDENCE_TEMPLATE_VERSION = "ms2-evidence-extraction-v2"
+EVIDENCE_REVIEW_TEMPLATE_VERSION = "ms2-evidence-review-v1"
 _SENSITIVE_KEYS = {
     "reference_answer",
     "reference_solution",
@@ -98,9 +99,11 @@ def build_blinded_evidence_request(
         checkpoint,
         (
             "Evidence instructions:\n"
-            "List each non-trivial mathematical claim visible in the checkpoint, its "
-            "conditions, supporting steps, target relation, and source locator. "
-            "Return JSON with key claims."
+            "Return only JSON with a claims array. Each object must include assertion "
+            "(a non-trivial mathematical claim visible in the checkpoint), conditions "
+            "(array of strings), supporting_steps (array of strings), target_relation "
+            "(string), and source_locator (an exact quote from the checkpoint). "
+            "Return an empty array only when there are no relevant non-trivial claims."
         ),
         parameters,
     )
@@ -193,15 +196,19 @@ def parse_claim_extraction_response(
 ) -> dict[str, Any]:
     """Parse extracted claims as candidates; extraction never supplies a final verdict."""
     payload = _parse_json_object(content)
-    if payload is None or not isinstance(payload.get("claims", []), list):
+    if payload is None or not isinstance(payload.get("claims"), list):
         return {"parse_status": "invalid", "claims": [], "raw_response": content}
     claims: list[dict[str, Any]] = []
     for index, raw in enumerate(payload["claims"]):
-        if not isinstance(raw, Mapping) or not str(raw.get("assertion", "")).strip():
-            continue
+        if (
+            not isinstance(raw, Mapping)
+            or not isinstance(raw.get("assertion"), str)
+            or not raw["assertion"].strip()
+        ):
+            return {"parse_status": "invalid", "claims": [], "raw_response": content}
         claim = ClaimRecord.from_mapping(
             {
-                "claim_id": str(raw.get("claim_id", f"extracted-{index}")),
+                "claim_id": f"extracted-{index}",
                 "sample_id": sample_id,
                 "route_id": route_id,
                 "problem": problem,
@@ -210,7 +217,7 @@ def parse_claim_extraction_response(
                 "conditions": raw.get("conditions", []),
                 "target_relation": raw.get("target_relation", ""),
                 "source_locator": raw.get("source_locator", ""),
-                "milestones": raw.get("milestones", [1]),
+                "milestones": [1],
                 "provenance": "Unknown",
                 "verdict": "unknown",
                 "conditions_sufficient": None,
@@ -219,6 +226,83 @@ def parse_claim_extraction_response(
         )
         claims.append(claim.to_dict())
     return {"parse_status": "valid", "claims": claims, "raw_response": content}
+
+
+def _build_evidence_review_request(
+    model: str,
+    problem: str,
+    checkpoint: str,
+    claims: Sequence[Mapping[str, Any]],
+    parameters: Mapping[str, Any],
+) -> dict[str, Any]:
+    fields = ("claim_id", "assertion", "conditions", "source_locator", "target_relation")
+    assessment_input = [{key: claim[key] for key in fields} for claim in claims]
+    instructions = (
+        "Independent evidence review:\n"
+        "Review each listed claim against the problem and visible checkpoint. "
+        "Return only JSON with a reviews array and one object per claim, containing "
+        "claim_id, verdict (verified, falsified, or unknown), "
+        "source_locator (an exact nonempty quote from the checkpoint), "
+        "conditions_sufficient (true or false), rationale (checkable mathematical steps "
+        "or a counterexample), and milestone (integer 0 to 3). "
+        "Use 0 for no confirmed progress, 1 for a relevant local result, "
+        "2 for a verified subgoal or materially reduced problem, and 3 for a verified "
+        "key chain with only explicit finishing steps left. "
+        "Use unknown when the claim or its conditions cannot be checked. "
+        "Return JSON even when all claims are unknown.\n"
+    )
+    return _build_request(
+        model, problem, checkpoint,
+        instructions + json.dumps(assessment_input, ensure_ascii=False),
+        parameters,
+    )
+
+
+def _apply_evidence_review(
+    content: str, claims: Sequence[dict[str, Any]], checkpoint: str, response_ref: str
+) -> tuple[list[dict[str, Any]], str | None]:
+    payload = _parse_json_object(content)
+    reviews = payload.get("reviews") if payload is not None else None
+    if not isinstance(reviews, list):
+        return list(claims), "independent evidence review could not be parsed"
+    expected = {claim["claim_id"] for claim in claims}
+    by_id = {}
+    for row in reviews:
+        if not isinstance(row, Mapping) or not isinstance(row.get("claim_id"), str):
+            return list(claims), "independent evidence review has invalid claim identities"
+        claim_id = row["claim_id"]
+        if claim_id not in expected or claim_id in by_id:
+            return list(claims), "independent evidence review has invalid claim identities"
+        by_id[claim_id] = row
+    if by_id.keys() != expected:
+        return list(claims), "independent evidence review did not cover every extracted claim"
+    assessed = []
+    for claim in claims:
+        row = by_id[claim["claim_id"]]
+        locator, rationale = row.get("source_locator"), row.get("rationale")
+        verdict, milestone = row.get("verdict"), row.get("milestone")
+        if (
+            verdict in ("verified", "falsified")
+            and isinstance(locator, str) and locator.strip() and locator in checkpoint
+            and isinstance(rationale, str) and rationale.strip()
+            and row.get("conditions_sufficient") is True
+            and type(milestone) is int and 0 <= milestone <= 3
+        ):
+            claim = {
+                **claim,
+                "milestones": [milestone],
+                "evidence": [{
+                    "provenance": "Agent-Assessed",
+                    "verdict": verdict,
+                    "source_locator": locator,
+                    "conditions": claim["conditions"],
+                    "conditions_sufficient": True,
+                    "rationale": rationale,
+                    "audit_ref": response_ref,
+                }],
+            }
+        assessed.append(claim)
+    return assessed, None
 
 
 def _usage(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -271,12 +355,14 @@ def freeze_scoring_artifact(
     claim_extraction: Mapping[str, Any],
     verified_claims: Sequence[ClaimRecord | Mapping[str, Any]] = (),
     costs: Sequence[Mapping[str, Any]] = (),
+    evidence_failure: str | None = None,
 ) -> dict[str, Any]:
     """Create the persisted pre-rollout score artifact with no future outcomes attached."""
     progress = score_verified_progress(
         verified_claims,
         sample_id=sample_id,
         route_id=route_id,
+        execution_failure=evidence_failure,
     )
     return {
         "schema_version": 1,
@@ -308,6 +394,7 @@ def score_ms2_checkpoint(
     problem: str,
     checkpoint: str,
     verified_claims: Sequence[ClaimRecord | Mapping[str, Any]] = (),
+    review_extracted_claims: bool = False,
 ) -> dict[str, Any]:
     """Run both scoring roles through the audited transport using only controlled visible input."""
     parameters = dict(config.model.parameters)
@@ -366,6 +453,31 @@ def score_ms2_checkpoint(
         }
     )
 
+    evidence_failure = None
+    if review_extracted_claims:
+        if extraction["parse_status"] != "valid":
+            evidence_failure = "evidence extraction could not be parsed"
+        elif extraction["claims"]:
+            review_id = _logical_call_id(run_id, sample_id, route_id, "evidence-review")
+            review_request = _build_evidence_review_request(
+                config.model.model, problem, checkpoint, extraction["claims"], parameters
+            )
+            review_ref = dispatch_request(
+                config, ledger, run_dir, review_id, sample_id, review_request,
+                effective_parameters=parameters,
+            )
+            review_payload = read_response(run_dir, review_ref)
+            verified_claims, evidence_failure = _apply_evidence_review(
+                _response_text(review_payload), extraction["claims"], checkpoint, review_ref
+            )
+            calls.append({
+                "call_id": review_id,
+                "sample_id": sample_id,
+                "route_id": route_id,
+                "stage": "evidence-review",
+                "usage": _usage(review_payload),
+            })
+
     artifact = freeze_scoring_artifact(
         sample_id=sample_id,
         route_id=route_id,
@@ -375,7 +487,10 @@ def score_ms2_checkpoint(
         claim_extraction=extraction,
         verified_claims=verified_claims,
         costs=calls,
+        evidence_failure=evidence_failure,
     )
+    if review_extracted_claims:
+        artifact["templates"]["evidence_review"] = EVIDENCE_REVIEW_TEMPLATE_VERSION
     artifact["artifact_ref"] = str(_artifact_path(run_dir, sample_id, route_id).relative_to(run_dir))
     _write_json(_artifact_path(run_dir, sample_id, route_id), artifact)
     return artifact

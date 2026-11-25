@@ -85,10 +85,11 @@ class BudgetSettings(StrictModel):
 
 
 class MS2Settings(StrictModel):
-    """Frozen output caps for MS2 initial candidates and continuations."""
+    """Frozen output caps and scoring mode for MS2."""
 
     initial_max_tokens: int = Field(default=1500, ge=1)
     continuation_max_tokens: int = Field(default=2000, ge=1)
+    score_checkpoints: bool = False
 
 
 class RunConfig(StrictModel):
@@ -110,7 +111,11 @@ class RunConfig(StrictModel):
 
     def redacted(self) -> dict[str, Any]:
         """Return serializable configuration metadata without credential values."""
-        return self.model_dump(mode="json")
+        data = self.model_dump(mode="json")
+        if not self.ms2.score_checkpoints:
+            # Preserve the fingerprint of runs created before scoring was integrated.
+            del data["ms2"]["score_checkpoints"]
+        return data
 
 
 class Sample(StrictModel):

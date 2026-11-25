@@ -1,0 +1,23 @@
+[model]
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-flash"
+api_key_env = "API_KEY"
+timeout_seconds = 120
+
+[model.capabilities]
+supported_parameters = ["max_tokens", "reasoning_effort", "temperature"]
+required_parameters = ["max_tokens", "reasoning_effort"]
+
+[model.parameters]
+max_tokens = 2000
+reasoning_effort = "none"
+temperature = 0.7
+
+[ms2]
+initial_max_tokens = 1500
+continuation_max_tokens = 2000
+score_checkpoints = true
+
+[budget]
+max_attempts_per_call = 2
+max_reserved_output_tokens = 690000

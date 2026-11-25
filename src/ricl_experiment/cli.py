@@ -71,7 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
     ms2_resume = ms2_commands.add_parser("resume", help="resume frozen MS2 logical calls")
     _add_ms2_inputs(ms2_resume, resume=True)
     prepare = commands.add_parser(
-        "prepare", help="freeze from local pinned snapshots without fetching data or calling a model"
+        "prepare",
+        help="freeze from local pinned snapshots without fetching data or calling a model",
     )
     prepare.add_argument(
         "--snapshot",
@@ -208,7 +209,9 @@ def main(argv: list[str] | None = None) -> int:
             output_path = args.output or args.run_dir / "metrics" / "ms3-repair.json"
             _write_json(output_path, report)
             print(f"analysis={output_path}")
-            print(f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}")
+            print(
+                f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}"
+            )
             return 0
         elif args.command == "ms3-diagnose":
             config = load_config(args.config)
@@ -230,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
             )
             print(f"analysis={output_path}")
+            print(f"coverage_figure={output_path.with_name(f'{output_path.stem}-coverage.png')}")
             return 0
         elif args.command == "exclude-groups":
             output_path = export_question_group_exclusions(args.manifest, args.output)

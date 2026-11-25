@@ -36,7 +36,13 @@ uv run python -m ricl_experiment ms2 resume `
   --answer-key <restricted/answer-key.json>
 ```
 
-每题预登记三个候选槽位；非空 Checkpoint 固定原样前缀并独立续推两次。轨迹写入 `traces/ms2.json`，答案键保存在 `restricted/answer-key.json`，续推请求只接收题面、原样 Checkpoint 和中性模板。统一旧入口也支持 `run --study ms2 --answer-key ...` 与对应的 `resume --study ms2`。
+每题预登记三个候选槽位；非空 Checkpoint 固定原样前缀并独立续推两次。轨迹写入 `traces/ms2.json`，答案键保存在 `restricted/answer-key.json`，续推请求只接收题面、原样 Checkpoint 和中性模板。统一旧入口也支持 `run --study ms2 --answer-key ...` 与对应的 `resume --study ms2`。`ms2-analyze` 从轨迹及相邻的 `scoring/` 工件离线重建四种方法的主指标、缺失/覆盖诊断、逐样本结果和来源分层 Bootstrap，不读取 API Key 或访问网络；输出 JSON 和 `-coverage.png` 图表。
+
+```powershell
+uv run python -m ricl_experiment ms2-analyze `
+  --trace artifacts/motivation/<run_id>/traces/ms2.json `
+  --output artifacts/motivation/<run_id>/metrics/ms2.json
+```
 
 成功或派发失败时都会显示 `run_id`。从原运行显式续跑，并传入原配置与清单：
 
@@ -55,4 +61,4 @@ uv run python -m ricl_experiment resume `
 
 ## 当前范围
 
-旧 `run` 和 `resume` 仍接受一个带 `sample_id` 与 `prompt` 的版本化单样例清单；MS2 控制入口接受准备好的多样本清单和分离的受限答案键。Issue #15 增加本地固定快照准备 `prepare`、确认样本组排除导出 `exclude-groups` 和同阶段 MS2/MS3 重叠报告 `overlap`；操作说明见 [docs/dataset-manifests.md](docs/dataset-manifests.md)。Issue #16 实现 Checkpoint、独立续推和独立答案判分引用；Issue #19 增加 `ms3-diagnose` 三方法盲化诊断和 `ms3-analyze` 固定分母离线分析；Issue #20 增加离线可审计的 MS3 四组修复 `ms3-repair` 与分析 `analyze-ms3-repair`。MS3 分析只读取落盘工件，不调用模型。Issue #17/#18 的 MS2 证据评分和主分析，以及 MS1 编排、报告和绘图仍属后续工单。研究架构和 artifact 边界见 [docs/README.md](docs/README.md)。
+旧 `run` 和 `resume` 仍接受一个带 `sample_id` 与 `prompt` 的版本化单样例清单；MS2 控制入口接受准备好的多样本清单和分离的受限答案键。Issue #15 增加本地固定快照准备 `prepare`、确认样本组排除导出 `exclude-groups` 和同阶段 MS2/MS3 重叠报告 `overlap`；操作说明见 [docs/dataset-manifests.md](docs/dataset-manifests.md)。Issue #16 实现 Checkpoint、独立续推和独立答案判分引用；Issue #19 增加 `ms3-diagnose` 三方法盲化诊断和 `ms3-analyze` 固定分母离线分析；Issue #20 增加离线可审计的 MS3 四组修复 `ms3-repair` 与分析 `analyze-ms3-repair`。MS3 分析只读取落盘工件，不调用模型。Issue #17/#18 的 MS2 盲化证据评分与离线主分析已实现；真实确认实验、MS1 依赖研究和最终研究报告仍需相应数据与审核工件。研究架构和 artifact 边界见 [docs/README.md](docs/README.md)。

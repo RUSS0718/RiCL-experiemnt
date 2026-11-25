@@ -13,6 +13,8 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
 
+from ..analysis.ms2 import route_flow_status
+
 FROZEN_SOURCE_COUNTS = {"math500": 5, "omni_math": 5}
 METRIC_NAMES = ("route_selection_success", "within_problem_ranking_accuracy")
 MINIMUM_ANALYZABLE = {"complete_topics": 8, "ranking_topics": 5, "independent_evidence_topics": 5}
@@ -150,9 +152,11 @@ def recompute_ms2_metrics(
         sample_id = _text(sample.get("sample_id"), "sample_id")
         candidates = []
         for candidate in _rows(sample.get("candidates"), f"candidates for {sample_id}"):
+            if route_flow_status(candidate) != "eligible":
+                continue
             candidate_id = _text(candidate.get("candidate_id"), "candidate_id")
             outcome = _outcome(candidate)
-            score = score_map.get(candidate_id, {})
+            score = score_map.get(candidate_id) or score_map.get(candidate.get("route_id"), {})
             candidates.append({
                 "candidate_id": candidate_id,
                 "route_id": candidate.get("route_id"),
@@ -168,7 +172,7 @@ def recompute_ms2_metrics(
                 "missing_reason": score.get("missing_reason", score.get("failure")),
             })
         candidates.sort(key=lambda row: row["candidate_id"])
-        complete = bool(candidates) and all(row["route_complete"] for row in candidates)
+        complete = len(candidates) >= 2 and all(row["route_complete"] for row in candidates)
         scored = complete and all(row["rater_score"] is not None and row["evidence_score"] is not None for row in candidates)
         outcomes = [row["y"] for row in candidates if row["y"] is not None]
         topics[sample_id] = {
@@ -454,6 +458,8 @@ def _score_map(rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, dict[str, A
 def _score(row: Mapping[str, Any], *names: str) -> int | None:
     for name in names:
         value = row.get(name)
+        if isinstance(value, Mapping):
+            value = value.get("score")
         if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 3:
             return value
     return None
@@ -462,6 +468,10 @@ def _score(row: Mapping[str, Any], *names: str) -> int | None:
 def _independent(row: Mapping[str, Any]) -> bool:
     if row.get("independent_evidence") is True or row.get("evidence_eligible") is True:
         return True
+    progress = row.get("verified_progress")
+    if isinstance(progress, Mapping) and _score(row, "verified_progress") is not None:
+        numerator = progress.get("coverage_numerator")
+        return type(numerator) is int and numerator > 0
     source = str(row.get("evidence_source", "")).casefold()
     verdict = str(row.get("evidence_verdict", row.get("evidence_status", ""))).casefold()
     return source in {"tool-verified", "derivation-checked", "agent-assessed"} and verdict in {"confirmed", "verified", "falsified", "contradicted"}

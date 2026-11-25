@@ -20,6 +20,21 @@ PRIMARY_COMPARISON = "rater_plus_evidence_minus_rater"
 VALID_ROLLOUT_STATUSES = {"correct", "incorrect"}
 
 
+def route_flow_status(candidate: Mapping[str, Any]) -> str:
+    """Identify which Checkpoints can enter the shared MS2 route comparison."""
+    prefix_status = candidate.get("prefix_status")
+    if prefix_status != "available":
+        return f"prefix_{prefix_status if isinstance(prefix_status, str) else 'missing'}"
+    evaluation = candidate.get("initial_evaluation")
+    evaluation = evaluation if isinstance(evaluation, Mapping) else {}
+    category = evaluation.get("analysis_category")
+    if category == "early_correct" or evaluation.get("status") == "correct":
+        return "early_correct"
+    if (category == "early_unknown" or category is None) and evaluation.get("extracted_answer") is not None:
+        return "early_unknown"
+    return "eligible"
+
+
 def analyze_ms2_trace(
     trace: Mapping[str, Any] | Path,
     *,
@@ -270,20 +285,8 @@ def _prepare_candidate(
     evaluation = candidate.get("initial_evaluation")
     evaluation = evaluation if isinstance(evaluation, Mapping) else {}
     initial_status = evaluation.get("status") or "unknown"
-    has_initial_answer = evaluation.get("extracted_answer") is not None
-    category = evaluation.get("analysis_category")
-    if prefix_status != "available":
-        flow_status = f"prefix_{prefix_status}"
-        diagnostics[flow_status] += 1
-    elif category == "early_correct" or initial_status == "correct":
-        flow_status = "early_correct"
-        diagnostics["early_correct_routes"] += 1
-    elif (category == "early_unknown" or category is None) and has_initial_answer:
-        flow_status = "early_unknown"
-        diagnostics["early_unknown_routes"] += 1
-    else:
-        flow_status = "eligible"
-        diagnostics["eligible_routes"] += 1
+    flow_status = route_flow_status(candidate)
+    diagnostics[flow_status if flow_status.startswith("prefix_") else f"{flow_status}_routes"] += 1
 
     rollouts = candidate.get("rollouts")
     if not isinstance(rollouts, list) or len(rollouts) != 2:

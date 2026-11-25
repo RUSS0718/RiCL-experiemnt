@@ -206,6 +206,33 @@ def _planning() -> dict:
     }
 
 
+def test_pilot_metrics_use_only_eligible_routes_and_read_live_scoring_artifacts() -> None:
+    trace, scoring = _trace_and_scoring()
+    first, second = trace["samples"][:2]
+    first["candidates"][2]["initial_evaluation"] = {"status": "correct"}
+    second["candidates"][0]["initial_evaluation"] = {"status": "correct"}
+    second["candidates"][1]["initial_evaluation"] = {
+        "status": "blind_review",
+        "analysis_category": "early_unknown",
+        "extracted_answer": "unresolved",
+    }
+    for candidate in first["candidates"][:2]:
+        row = next(row for row in scoring if row.get("candidate_id") == candidate["candidate_id"])
+        row.clear()
+        row.update({
+            "route_id": candidate["route_id"],
+            "llm_rater": {"score": 1},
+            "verified_progress": {"score": 1, "coverage_numerator": 1},
+        })
+    report = recompute_ms2_metrics(trace, scoring)
+    first_topic = report["topics"][first["sample_id"]]
+    second_topic = report["topics"][second["sample_id"]]
+    assert first_topic["main_complete"]
+    assert first_topic["independent_evidence"]
+    assert len(first_topic["candidates"]) == 2
+    assert not second_topic["main_complete"]
+
+
 def test_pilot_report_distinguishes_engineering_ready_from_external_blockers() -> None:
     manifest = _manifest()
     trace, scoring = _trace_and_scoring()

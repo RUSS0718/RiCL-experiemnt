@@ -1,5 +1,7 @@
 # Research documentation map
 
+- [Motivation Study revised protocol](motivation-study-revised-protocol.md): decision page, feasibility archive, and proposed authorization boundaries.
+
 - [Architecture](architecture.md): selected stack, target modules, run artifact contract, CLI, and data/role boundaries.
 - [Dataset manifests](dataset-manifests.md): fixed local snapshots, sampling plans, restricted artifacts, identity review, and ProcessBench/answer-evaluation boundaries.
 - [MS3 Pilot acceptance](ms3-pilot-acceptance.md): offline engineering gate, leakage/ledger/recompute checks, and sample-size/cost planning.

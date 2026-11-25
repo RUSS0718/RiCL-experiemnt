@@ -24,6 +24,7 @@ class MS2ControlledEndpoint(BaseHTTPRequestHandler):
     generation_count = 0
     continuation_count = 0
     empty_candidate_index: int | None = None
+    status_code = 200
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -90,7 +91,7 @@ class MS2ControlledEndpoint(BaseHTTPRequestHandler):
             "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
         }
         encoded = json.dumps(payload).encode()
-        self.send_response(200)
+        self.send_response(self.status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
@@ -106,6 +107,7 @@ def ms2_endpoint():
     MS2ControlledEndpoint.generation_count = 0
     MS2ControlledEndpoint.continuation_count = 0
     MS2ControlledEndpoint.empty_candidate_index = None
+    MS2ControlledEndpoint.status_code = 200
     server = ThreadingHTTPServer(("127.0.0.1", 0), MS2ControlledEndpoint)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -185,6 +187,7 @@ def run_ms2(
     answer_key: Path,
     artifacts: Path,
     run_id: str | None = None,
+    redispatch_failed: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     args = [sys.executable, "-m", "ricl_experiment", "ms2", command]
     if command == "run":
@@ -192,6 +195,8 @@ def run_ms2(
         args += ["--phase", phase]
     else:
         args += ["--run-id", run_id or ""]
+        if redispatch_failed:
+            args += ["--redispatch-failed"]
     args += [
         "--config",
         str(config),
@@ -436,6 +441,54 @@ def test_ms2_empty_checkpoint_is_recorded_without_continuation(tmp_path, ms2_end
         "not_dispatched",
         "not_dispatched",
     ]
+
+
+def test_ms2_explicit_redispatch_preserves_failed_attempts_and_budget(tmp_path, ms2_endpoint):
+    MS2ControlledEndpoint.status_code = 401
+    config, manifest, answer_key, artifacts = write_ms2_inputs(tmp_path, ms2_endpoint)
+
+    failed = run_ms2("run", config, manifest, answer_key, artifacts)
+    assert failed.returncode == 1, failed.stderr
+    run_id = failed.stdout.splitlines()[0].removeprefix("run_id=")
+    run_dir = artifacts / "motivation" / run_id
+    assert len(MS2ControlledEndpoint.requests) == 3
+
+    MS2ControlledEndpoint.status_code = 200
+    rejected = run_ms2("resume", config, manifest, answer_key, artifacts, run_id)
+    assert rejected.returncode == 1
+    assert len(MS2ControlledEndpoint.requests) == 3
+
+    resumed = run_ms2(
+        "resume", config, manifest, answer_key, artifacts, run_id,
+        redispatch_failed=True,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert len(MS2ControlledEndpoint.requests) == 12
+    metadata_path = run_dir / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["status"] = "incomplete"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    MS2ControlledEndpoint.status_code = 401
+    completed_resume = run_ms2(
+        "resume", config, manifest, answer_key, artifacts, run_id,
+        redispatch_failed=True,
+    )
+    assert completed_resume.returncode == 0
+    assert len(MS2ControlledEndpoint.requests) == 12
+    with sqlite3.connect(run_dir / "run.sqlite3") as db:
+        attempts = db.execute(
+            "SELECT attempt_number, status, reserved_output_tokens FROM attempts "
+            "WHERE logical_call_id IN ("
+            "SELECT logical_call_id FROM redispatches"
+            ") ORDER BY logical_call_id, attempt_number"
+        ).fetchall()
+        assert len(attempts) == 6
+        assert [row[1] for row in attempts] == ["failed", "completed"] * 3
+        assert [row[0] for row in attempts] == [1, 2] * 3
+        assert [row[2] for row in attempts] == [8] * 6
+        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 12
+        assert db.execute("SELECT COUNT(*) FROM redispatches").fetchone()[0] == 3
+        assert db.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0] == 9
 
 
 def test_ms2_resume_reuses_completed_calls_and_trace(tmp_path, ms2_endpoint):

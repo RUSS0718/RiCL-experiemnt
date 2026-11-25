@@ -208,6 +208,8 @@ def resume_ms2_run(
     manifest_path: Path,
     answer_key_path: Path,
     artifacts_root: Path,
+    *,
+    redispatch_failed: bool = False,
 ) -> tuple[str, str]:
     """Resume stable logical calls only after validating every frozen input."""
     if not run_id or any(
@@ -253,7 +255,10 @@ def resume_ms2_run(
         live_metadata = json.loads((run_dir / "metadata.json").read_bytes())
         if live_metadata.get("status") == "completed" and (run_dir / "traces/ms2.json").is_file():
             return run_id, "completed"
-        return _execute(run_id, run_dir, config, manifest, answers, protocol, caps)
+        return _execute(
+            run_id, run_dir, config, manifest, answers, protocol, caps,
+            redispatch_failed=redispatch_failed,
+        )
 
 
 def _inputs(
@@ -288,6 +293,7 @@ def _execute(
     answers: dict[str, MS2AnswerKeyRow],
     protocol: str,
     caps: dict[str, int],
+    redispatch_failed: bool = False,
 ) -> tuple[str, str]:
     """Reconcile generation and rollout calls against the shared SQLite ledger."""
     ledger = Ledger(run_dir / "run.sqlite3", config.budget.max_reserved_output_tokens)
@@ -331,6 +337,7 @@ def _execute(
                         "generation",
                         generation_fields,
                         generation_parameters,
+                        redispatch_failed=redispatch_failed,
                     )
                     payload = read_response(run_dir, response_ref)
                     prefix = payload["choices"][0]["message"]["content"]
@@ -429,6 +436,7 @@ def _execute(
                             checkpoint=prefix,
                             review_extracted_claims=True,
                             json_evidence=protocol != "legacy-v1",
+                            redispatch_failed=redispatch_failed,
                         )
                         candidate["scoring_artifact_ref"] = score["artifact_ref"]
                     except ModelDispatchError as error:
@@ -468,6 +476,7 @@ def _execute(
                                     "instruction": _continuation_instructions(protocol),
                                 },
                                 parameters,
+                                redispatch_failed=redispatch_failed,
                             )
                             rollout_payload = read_response(run_dir, rollout_ref)
                             rollout_audit = ledger.call_audit(rollout_id)

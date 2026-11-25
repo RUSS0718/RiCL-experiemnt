@@ -132,6 +132,8 @@ def dispatch_call(
     role: str,
     visible_fields: dict[str, Any],
     parameters: dict[str, Any] | None = None,
+    *,
+    redispatch_failed: bool = False,
 ) -> str:
     """Build and send one role-isolated request with stage-specific parameters."""
     model = config.model
@@ -152,6 +154,7 @@ def dispatch_call(
         sample_id,
         request_body,
         effective_parameters=effective_parameters,
+        redispatch_failed=redispatch_failed,
     )
 
 
@@ -164,6 +167,7 @@ def dispatch_request(
     request_body: dict[str, Any],
     *,
     effective_parameters: dict[str, Any] | None = None,
+    redispatch_failed: bool = False,
 ) -> str:
     """Send one isolated request through the shared audited transport."""
     model = config.model
@@ -178,7 +182,9 @@ def dispatch_request(
     if recovered is not None:
         return recovered
     if ledger.call_status(call_id) == "failed":
-        raise ModelDispatchError("logical call has a permanent failed attempt; start a new run")
+        if not redispatch_failed:
+            raise ModelDispatchError("logical call has a permanent failed attempt; start a new run")
+        ledger.authorize_redispatch(call_id, request_fingerprint)
     reservation = int(effective_parameters.get("max_tokens", 0))
     key = os.environ.get(model.api_key_env) if model.api_key_env else None
     headers = {"Authorization": f"Bearer {key}"} if key else {}
@@ -198,7 +204,10 @@ def dispatch_request(
             raise ModelDispatchError(str(error)) from error
         started = time.monotonic()
         try:
-            with httpx.Client(timeout=model.timeout_seconds, trust_env=False) as client:
+            proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+            with httpx.Client(
+                timeout=model.timeout_seconds, trust_env=False, proxy=proxy
+            ) as client:
                 response = client.post(endpoint, json=request_body, headers=headers)
             elapsed_ms = int((time.monotonic() - started) * 1000)
             response_ref = _save_response(run_dir, attempt_id, response.content)

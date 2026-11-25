@@ -413,6 +413,7 @@ def score_ms2_checkpoint(
     verified_claims: Sequence[ClaimRecord | Mapping[str, Any]] = (),
     review_extracted_claims: bool = False,
     json_evidence: bool = False,
+    redispatch_failed: bool = False,
 ) -> dict[str, Any]:
     """Run both scoring roles through the audited transport using only controlled visible input."""
     parameters = dict(config.model.parameters)
@@ -432,6 +433,7 @@ def score_ms2_checkpoint(
         sample_id,
         requests["llm_rater"],
         effective_parameters=parameters,
+        redispatch_failed=redispatch_failed,
     )
     rater_payload = read_response(run_dir, rater_ref)
     parsed_rater = parse_llm_rater_response(_response_text(rater_payload))
@@ -454,6 +456,7 @@ def score_ms2_checkpoint(
         sample_id,
         requests["evidence"],
         effective_parameters=parameters,
+        redispatch_failed=redispatch_failed,
     )
     evidence_payload = read_response(run_dir, evidence_ref)
     extraction = parse_claim_extraction_response(
@@ -486,6 +489,7 @@ def score_ms2_checkpoint(
             review_ref = dispatch_request(
                 config, ledger, run_dir, review_id, sample_id, review_request,
                 effective_parameters=parameters,
+                redispatch_failed=redispatch_failed,
             )
             review_payload = read_response(run_dir, review_ref)
             verified_claims, evidence_failure = _apply_evidence_review(

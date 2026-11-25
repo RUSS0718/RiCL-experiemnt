@@ -212,6 +212,37 @@ class Ledger:
             self.db.rollback()
             raise
 
+    def authorize_redispatch(self, call_id: str, request_fingerprint: str) -> None:
+        """Link a new attempt to a failed request without altering its historical attempts."""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            call = self.db.execute(
+                "SELECT status, request_fingerprint, owner_attempt_id FROM logical_calls "
+                "WHERE logical_call_id = ?",
+                (call_id,),
+            ).fetchone()
+            if (
+                call is None
+                or call["status"] != "failed"
+                or call["owner_attempt_id"] is not None
+                or call["request_fingerprint"] != request_fingerprint
+            ):
+                raise ValueError("failed-call redispatch identity check failed")
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS redispatches ("
+                "logical_call_id TEXT NOT NULL REFERENCES logical_calls(logical_call_id), "
+                "request_fingerprint TEXT NOT NULL, "
+                "authorized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            self.db.execute(
+                "INSERT INTO redispatches (logical_call_id, request_fingerprint) VALUES (?, ?)",
+                (call_id, request_fingerprint),
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
     def record_failure(
         self,
         attempt_id: str,

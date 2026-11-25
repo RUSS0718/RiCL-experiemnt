@@ -40,6 +40,7 @@ from .runner import resume_run, start_run
 def _add_ms2_inputs(parser: argparse.ArgumentParser, *, resume: bool = False) -> None:
     if resume:
         parser.add_argument("--run-id", required=True)
+        parser.add_argument("--redispatch-failed", action="store_true")
     else:
         parser.add_argument(
             "--phase",
@@ -239,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "resume":
             if args.study == "ms2" and args.answer_key is not None:
                 run_id, status = resume_ms2_run(
-                    args.run_id, args.config, args.manifest, args.answer_key, args.artifacts_root
+                    args.run_id, args.config, args.manifest, args.answer_key, args.artifacts_root,
+                    redispatch_failed=args.redispatch_failed,
                 )
             else:
                 run_id = resume_run(args.run_id, args.config, args.manifest, args.artifacts_root)
@@ -251,7 +253,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 run_id, status = resume_ms2_run(
-                    args.run_id, args.config, args.manifest, args.answer_key, args.artifacts_root
+                    args.run_id, args.config, args.manifest, args.answer_key, args.artifacts_root,
+                    redispatch_failed=args.redispatch_failed,
                 )
         elif args.command == "ms1-plan":
             traces = [_read_json(path) for path in args.trace]

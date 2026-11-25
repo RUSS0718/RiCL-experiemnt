@@ -1,0 +1,35 @@
+[model]
+base_url = "https://code.aigcpro.org/v1"
+model = "deepseek-v4.1-flash"
+api_key_env = "API_KEY"
+timeout_seconds = 120
+
+[model.capabilities]
+supported_parameters = ["max_tokens", "reasoning_effort", "temperature"]
+required_parameters = ["max_tokens", "reasoning_effort"]
+
+[model.parameters]
+max_tokens = 2000
+reasoning_effort = "none"
+temperature = 0.7
+
+[ms2]
+protocol_version = "ms2-v2"
+continuation_max_tokens = 3000
+score_checkpoints = true
+
+[ms2.checkpoint_tokens_by_stratum]
+'["math500","Algebra",4,"no_image"]' = 512
+'["math500","Counting & Probability",5,"no_image"]' = 1500
+'["math500","Geometry",4,"no_image"]' = 512
+'["math500","Intermediate Algebra",5,"no_image"]' = 1500
+'["math500","Number Theory",5,"no_image"]' = 1500
+'["omni_math",["Mathematics -> Applied Mathematics -> Statistics -> Probability -> Counting Methods -> Combinations"],4.0,"HMMT_2"]' = 512
+'["omni_math",["Mathematics -> Discrete Mathematics -> Combinatorics"],4.5,"HMMT_11"]' = 512
+'["omni_math",["Mathematics -> Geometry -> Plane Geometry -> Polygons"],4.0,"HMMT_11"]' = 512
+'["omni_math",["Mathematics -> Algebra -> Algebra -> Polynomial Operations"],5.0,"HMMT_2"]' = 1500
+'["omni_math",["Mathematics -> Discrete Mathematics -> Combinatorics"],5.0,"HMMT_2"]' = 1500
+
+[budget]
+max_attempts_per_call = 2
+max_reserved_output_tokens = 780360

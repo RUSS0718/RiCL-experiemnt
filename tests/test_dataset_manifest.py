@@ -270,6 +270,12 @@ def test_frozen_answer_extraction_normalization_and_equivalence():
     assert squared_root.status is AnswerStatus.CORRECT
 
 
+def test_final_answer_with_paired_latex_inline_delimiters():
+    assert classify_answer(r"Final answer: \(13\)", "13").status is AnswerStatus.CORRECT
+    assert classify_answer(r"Final answer: \(12\)", "13").status is AnswerStatus.INCORRECT
+    assert classify_answer(r"Final answer: \(13", "13").status is AnswerStatus.BLIND_REVIEW
+
+
 def test_ambiguous_open_proof_and_missing_output_take_distinct_review_states():
     ambiguous = classify_answer("Final answer: x = 2", "2")
     proof = classify_answer("Final answer: 2", "2", open_proof=True)

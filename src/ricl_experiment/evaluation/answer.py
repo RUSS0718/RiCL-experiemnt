@@ -72,6 +72,8 @@ def normalize_answer(answer: str | None) -> str | None:
     if answer is None:
         return None
     value = answer.strip().strip("$").strip()
+    if value.startswith(r"\(") and value.endswith(r"\)"):
+        value = value[2:-2].strip()
     value = value.replace("\\left", "").replace("\\right", "")
     value = value.replace("\\cdot", "*").replace("\\times", "*")
     value = value.replace("\\pi", "pi").replace("\\infty", "oo")

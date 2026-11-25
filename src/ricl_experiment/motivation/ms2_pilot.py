@@ -14,6 +14,7 @@ from statistics import mean, stdev
 from typing import Any
 
 from ..analysis.ms2 import route_flow_status
+from ..config import fingerprint
 
 FROZEN_SOURCE_COUNTS = {"math500": 5, "omni_math": 5}
 METRIC_NAMES = ("route_selection_success", "within_problem_ranking_accuracy")
@@ -56,6 +57,13 @@ def build_pilot_report(
             resume_evidence = _read_resume_ledger(run_dir / "run.sqlite3")
         if execution_limits is None:
             execution_limits = _execution_limits_from_config(run_dir / "config.json")
+        if requests is None:
+            requests = _read_persisted_requests(run_dir / "run.sqlite3")
+        if scoring is None:
+            scoring = [
+                _load_object(path, "scoring")
+                for path in sorted((run_dir / "scoring").glob("*.json"))
+            ]
     else:
         manifest = _load_object(manifest_or_run_dir, "manifest")
     trace_data = _load_object(trace, "trace")
@@ -653,6 +661,28 @@ def _read_resume_ledger(path: Path) -> dict[str, Any] | None:
         return {"logical_calls": calls}
     except sqlite3.Error:
         return None
+
+
+def _read_persisted_requests(path: Path) -> list[dict[str, Any]] | None:
+    if not path.is_file():
+        return None
+    try:
+        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as db:
+            rows = db.execute(
+                "SELECT attempts.request_fingerprint, requests.request_body FROM attempts "
+                "LEFT JOIN requests USING (logical_call_id) ORDER BY attempts.attempt_id"
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    if any(body is None for _, body in rows):
+        return None
+    requests = []
+    for expected, body in rows:
+        request = json.loads(body)
+        if not isinstance(request, dict) or fingerprint(request) != expected:
+            raise PilotArtifactError("persisted request does not match its attempt fingerprint")
+        requests.append(request)
+    return requests
 
 
 

@@ -20,6 +20,7 @@ def test_module_help_lists_single_sample_run_and_resume_commands():
     assert "analyze-ms3-repair" in result.stdout
     assert "ms3-pilot-check" in result.stdout
     assert "ms2-analyze" in result.stdout
+    assert "ms2-pilot-check" in result.stdout
     assert result.stderr == ""
 
 

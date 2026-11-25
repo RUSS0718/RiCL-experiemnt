@@ -13,6 +13,8 @@ from typing import ClassVar
 
 import pytest
 
+from ricl_experiment.cli import main
+
 
 class MS2ControlledEndpoint(BaseHTTPRequestHandler):
     requests: ClassVar[list[dict]] = []
@@ -220,6 +222,11 @@ def test_ms2_cli_commits_blinded_scoring_before_continuations(tmp_path, ms2_endp
     assert score["associated_outcomes"] == []
     assert run_ms2("resume", config, manifest, answer_key, artifacts, run_id).returncode == 0
     assert len(MS2ControlledEndpoint.requests) == 18
+    assert main(["ms2-pilot-check", "--run-dir", str(run_dir)]) == 2
+    gate = json.loads((run_dir / "metrics" / "pilot-gate.json").read_text(encoding="utf-8"))
+    assert gate["leakage_audit"]["status"] == "pass"
+    assert gate["leakage_audit"]["request_count"] == 18
+    assert gate["evidence_diagnostics"]["valid_scores"] == 3
 
 
 def test_ms2_cli_keeps_three_routes_and_two_isolated_rollouts(tmp_path, ms2_endpoint):

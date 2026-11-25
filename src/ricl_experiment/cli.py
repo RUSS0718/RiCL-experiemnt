@@ -27,6 +27,7 @@ from .motivation.ms1_dependency import (
     import_ms1_annotations,
 )
 from .motivation.ms2 import resume_ms2_run, start_ms2_run
+from .motivation.ms2_pilot import write_pilot_report
 from .motivation.ms3.analysis import write_analysis
 from .motivation.ms3.diagnosis import run_diagnosis
 from .motivation.ms3_repair import run_ms3_repair
@@ -157,6 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     ms2_analysis.add_argument("--scoring-dir", type=Path)
     ms2_analysis.add_argument("--bootstrap-samples", type=int, default=10_000)
     ms2_analysis.add_argument("--seed", type=int, default=2026)
+    ms2_pilot = commands.add_parser("ms2-pilot-check", help="verify a saved MS2 Pilot offline")
+    ms2_pilot.add_argument("--run-dir", required=True, type=Path)
+    ms2_pilot.add_argument("--output", type=Path)
+    ms2_pilot.add_argument("--requests", type=Path, help="audited request export for older runs")
+    ms2_pilot.add_argument("--reported-metrics", type=Path)
+    ms2_pilot.add_argument("--planning", type=Path)
+    ms2_pilot.add_argument("--external-evidence", type=Path)
     ms1_plan = commands.add_parser(
         "ms1-plan", help="build a fixed-seed offline MS1 sampling plan from MS2 traces"
     )
@@ -335,6 +343,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"analysis={output_path}")
             print(f"coverage_figure={output_path.with_name(f'{output_path.stem}-coverage.png')}")
             return 0
+        elif args.command == "ms2-pilot-check":
+            output = args.output or args.run_dir / "metrics" / "pilot-gate.json"
+            report = write_pilot_report(
+                args.run_dir, output,
+                requests=args.requests,
+                reported_metrics=args.reported_metrics,
+                planning=args.planning,
+                external_evidence=args.external_evidence,
+            )
+            print(f"status={report['status']}")
+            print(f"status_artifact={output}")
+            return 0 if report["status"] == "ready_for_external_signoff" else 2
         elif args.command == "ms3-pilot-check":
             pricing = None
             if args.pricing is not None:

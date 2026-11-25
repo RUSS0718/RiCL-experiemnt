@@ -1,5 +1,7 @@
 # Research documentation map
 
+- [Motivation Study batch decision](motivation-study-batch-decision.md): offline coverage, proposed first batch, and spending gate.
+
 - [Motivation Study revised protocol](motivation-study-revised-protocol.md): decision page, feasibility archive, and proposed authorization boundaries.
 
 - [Architecture](architecture.md): selected stack, target modules, run artifact contract, CLI, and data/role boundaries.

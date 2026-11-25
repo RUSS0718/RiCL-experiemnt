@@ -48,7 +48,8 @@ class ControlledEndpoint(BaseHTTPRequestHandler):
                 with sqlite3.connect(databases[0]) as db:
                     self.pre_send_attempts.append(
                         db.execute(
-                            "SELECT status, reserved_output_tokens FROM attempts "
+                            "SELECT status, reserved_output_tokens, request_body FROM attempts "
+                            "JOIN requests USING (logical_call_id) "
                             "ORDER BY attempt_number DESC LIMIT 1"
                         ).fetchone()
                     )
@@ -197,7 +198,9 @@ def test_run_dispatches_and_persists_auditable_single_sample(tmp_path, controlle
     run_id = result.stdout.strip().removeprefix("run_id=")
     assert len(run_id) == 32
     assert len(ControlledEndpoint.requests) == 1
-    assert ControlledEndpoint.pre_send_attempts == [("pending", 32)]
+    [(pre_send_status, pre_send_reservation, saved_body)] = ControlledEndpoint.pre_send_attempts
+    assert (pre_send_status, pre_send_reservation) == ("pending", 32)
+    assert json.loads(saved_body) == ControlledEndpoint.requests[0][2]
     path, headers, body = ControlledEndpoint.requests[0]
     assert path == "/v1/chat/completions"
     assert headers["Authorization"] == "Bearer local-test-secret"

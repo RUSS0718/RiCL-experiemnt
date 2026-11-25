@@ -167,7 +167,7 @@ def dispatch_request(
     model = config.model
     effective_parameters = dict(model.parameters if effective_parameters is None else effective_parameters)
     request_fingerprint = fingerprint(request_body)
-    ledger.ensure_call(call_id, sample_id, request_fingerprint)
+    ledger.ensure_call(call_id, sample_id, request_fingerprint, request_body=request_body)
     previous = ledger.result(call_id)
     if previous is not None:
         return str(previous["response_ref"])

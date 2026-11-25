@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS logical_calls (
     response_ref TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS requests (
+    logical_call_id TEXT PRIMARY KEY REFERENCES logical_calls(logical_call_id),
+    request_body TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS attempts (
     attempt_id TEXT PRIMARY KEY,
     logical_call_id TEXT NOT NULL REFERENCES logical_calls(logical_call_id),
@@ -67,7 +71,14 @@ class Ledger:
         """Close the SQLite connection."""
         self.db.close()
 
-    def ensure_call(self, call_id: str, sample_id: str, request_fingerprint: str) -> None:
+    def ensure_call(
+        self,
+        call_id: str,
+        sample_id: str,
+        request_fingerprint: str,
+        *,
+        request_body: dict[str, Any] | None = None,
+    ) -> None:
         """Create the stable logical-call row once, leaving completed rows reusable."""
         self.db.execute(
             "INSERT OR IGNORE INTO logical_calls "
@@ -79,6 +90,11 @@ class Ledger:
         ).fetchone()
         if row["request_fingerprint"] != request_fingerprint:
             raise ValueError("logical call request fingerprint changed")
+        if request_body is not None:
+            self.db.execute(
+                "INSERT OR IGNORE INTO requests (logical_call_id, request_body) VALUES (?, ?)",
+                (call_id, canonical_json(request_body)),
+            )
 
     def result(self, call_id: str) -> sqlite3.Row | None:
         """Return the already-owned analysis result, if one exists."""

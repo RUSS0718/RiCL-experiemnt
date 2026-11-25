@@ -518,6 +518,7 @@ def _materialize_snapshot(
 
 def _mark_near_duplicate_candidates(rows: list[dict[str, Any]]) -> None:
     """Mark likely near duplicates for human review without merging question groups."""
+    threshold = 0.97
     reviewable = {"unreviewed", "pending", "pending_review", "unresolved", "needs_review"}
     rows_by_id = {row["source_record_id"]: row for row in rows}
     inverted_index: dict[tuple[str, ...], set[str]] = defaultdict(set)
@@ -552,10 +553,14 @@ def _mark_near_duplicate_candidates(rows: list[dict[str, Any]]) -> None:
             right = rows_by_id[right_id]
             if row["question_group_id"] == right["question_group_id"]:
                 continue
-            similarity = SequenceMatcher(
+            comparison = SequenceMatcher(
                 None, row["problem"].casefold(), right["problem"].casefold(), autojunk=False
-            ).ratio()
-            if similarity >= 0.97:
+            )
+            if (
+                comparison.real_quick_ratio() >= threshold
+                and comparison.quick_ratio() >= threshold
+                and comparison.ratio() >= threshold
+            ):
                 candidate_ids[left_id].add(right_id)
                 candidate_ids[right_id].add(left_id)
 

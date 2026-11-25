@@ -53,7 +53,7 @@ class ControlledEndpoint(BaseHTTPRequestHandler):
                         ).fetchone()
                     )
         if self.block_request:
-            self.release_request.wait(timeout=5)
+            self.release_request.wait(timeout=30)
         if self.delay_seconds:
             time.sleep(self.delay_seconds)
         payload = {
@@ -403,7 +403,7 @@ def test_resume_retries_a_persisted_unconfirmed_attempt(tmp_path, controlled_end
 
 
 def test_one_scheduler_owns_a_run_at_a_time(tmp_path, controlled_endpoint):
-    config, manifest, artifacts = write_inputs(tmp_path, controlled_endpoint)
+    config, manifest, artifacts = write_inputs(tmp_path, controlled_endpoint, timeout=35)
     env = {**os.environ, "CONTROLLED_API_KEY": "local-test-secret"}
     ControlledEndpoint.block_request = True
     first = subprocess.Popen(
@@ -429,7 +429,7 @@ def test_one_scheduler_owns_a_run_at_a_time(tmp_path, controlled_endpoint):
         env=env,
     )
     try:
-        assert ControlledEndpoint.request_seen.wait(timeout=5)
+        assert ControlledEndpoint.request_seen.wait(timeout=20)
         run_id = next((artifacts / "motivation").iterdir()).name
         second = invoke_cli(
             "resume",

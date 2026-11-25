@@ -286,7 +286,7 @@ def _shape(manifest: Mapping[str, Any]) -> dict[str, Any]:
     failures: list[str] = []
     if manifest.get("study") != "ms2":
         failures.append("study")
-    if manifest.get("phase") != "pilot":
+    if manifest.get("phase") not in {"pilot", "adjustment_validation"}:
         failures.append("phase")
     samples = manifest.get("samples")
     if not isinstance(samples, list):
@@ -406,7 +406,7 @@ def _coverage(manifest: Mapping[str, Any], trace: Mapping[str, Any]) -> dict[str
                     "candidate_id": candidate.get("candidate_id"),
                     "reason": "rollout_slots",
                 })
-    if trace.get("study") != "ms2" or trace.get("phase") != "pilot":
+    if trace.get("study") != "ms2" or trace.get("phase") != manifest.get("phase"):
         failures.append("trace_identity")
     if trace.get("candidate_slots") != 3 or trace.get("rollouts_per_checkpoint") != 2:
         failures.append("frozen_trace_parameters")

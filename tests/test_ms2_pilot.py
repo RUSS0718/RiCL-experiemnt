@@ -242,6 +242,12 @@ def test_pilot_report_reports_the_frozen_manifest_phase() -> None:
     report = build_pilot_report(manifest, trace, scoring=scoring)
 
     assert report["phase"] == "adjustment_validation"
+    assert report["shape"]["status"] == "pass"
+    assert report["coverage"]["status"] == "pass"
+
+    trace["phase"] = "pilot"
+    mismatched = build_pilot_report(manifest, trace, scoring=scoring)
+    assert "trace_identity" in mismatched["coverage"]["failures"]
 
 
 def test_pilot_report_distinguishes_engineering_ready_from_external_blockers() -> None:

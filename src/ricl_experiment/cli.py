@@ -8,6 +8,7 @@ import sys
 import uuid
 from pathlib import Path
 
+from .analysis.ms1_dependency import analyze_ms1_dependency, write_ms1_case_export
 from .analysis.ms2 import write_ms2_analysis
 from .analysis.ms3_pilot import write_ms3_pilot_artifacts
 from .analysis.ms3_repair import analyze_repairs
@@ -19,6 +20,11 @@ from .datasets.manifest import (
     prepare_sample_manifest,
     write_overlap_report,
     write_prepared_manifest,
+)
+from .motivation.ms1_dependency import (
+    build_blind_annotation_manifest,
+    build_ms1_sampling_plan,
+    import_ms1_annotations,
 )
 from .motivation.ms2 import resume_ms2_run, start_ms2_run
 from .motivation.ms3.analysis import write_analysis
@@ -72,7 +78,8 @@ def build_parser() -> argparse.ArgumentParser:
     ms2_resume = ms2_commands.add_parser("resume", help="resume frozen MS2 logical calls")
     _add_ms2_inputs(ms2_resume, resume=True)
     prepare = commands.add_parser(
-        "prepare", help="freeze from local pinned snapshots without fetching data or calling a model"
+        "prepare",
+        help="freeze from local pinned snapshots without fetching data or calling a model",
     )
     prepare.add_argument(
         "--snapshot",
@@ -150,6 +157,39 @@ def build_parser() -> argparse.ArgumentParser:
     ms2_analysis.add_argument("--scoring-dir", type=Path)
     ms2_analysis.add_argument("--bootstrap-samples", type=int, default=10_000)
     ms2_analysis.add_argument("--seed", type=int, default=2026)
+    ms1_plan = commands.add_parser(
+        "ms1-plan", help="build a fixed-seed offline MS1 sampling plan from MS2 traces"
+    )
+    ms1_plan.add_argument("--trace", required=True, action="append", type=Path)
+    ms1_plan.add_argument("--outcomes", required=True, type=Path)
+    ms1_plan.add_argument("--output", required=True, type=Path)
+    ms1_plan.add_argument("--seed", required=True, type=int)
+    ms1_plan.add_argument("--failure-target", type=int, default=20)
+    ms1_plan.add_argument("--correct-target", type=int, default=10)
+    ms1_blind = commands.add_parser(
+        "ms1-blind", help="create a blind MS1 dependency annotation manifest"
+    )
+    ms1_blind.add_argument("--plan", required=True, type=Path)
+    ms1_blind.add_argument("--output", required=True, type=Path)
+    ms1_import = commands.add_parser(
+        "ms1-import-annotations", help="import two blind annotations and optional third reviews"
+    )
+    ms1_import.add_argument("--plan", required=True, type=Path)
+    ms1_import.add_argument("--independent", required=True, action="append", type=Path)
+    ms1_import.add_argument("--third-review", action="append", type=Path, default=[])
+    ms1_import.add_argument("--output", required=True, type=Path)
+    ms1_analyze = commands.add_parser(
+        "ms1-analyze", help="compute offline MS1 dependency and paired re-derivation metrics"
+    )
+    ms1_analyze.add_argument("--annotations", required=True, type=Path)
+    ms1_analyze.add_argument("--rederivations", type=Path)
+    ms1_analyze.add_argument("--output", required=True, type=Path)
+    ms1_cases = commands.add_parser(
+        "ms1-export-cases", help="export two or three selected MS1 analysis cases"
+    )
+    ms1_cases.add_argument("--analysis", required=True, type=Path)
+    ms1_cases.add_argument("--path-id", required=True, action="append")
+    ms1_cases.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -185,6 +225,49 @@ def main(argv: list[str] | None = None) -> int:
                 run_id, status = resume_ms2_run(
                     args.run_id, args.config, args.manifest, args.answer_key, args.artifacts_root
                 )
+        elif args.command == "ms1-plan":
+            traces = [_read_json(path) for path in args.trace]
+            outcomes = _read_records(args.outcomes)
+            plan = build_ms1_sampling_plan(
+                traces,
+                seed=args.seed,
+                independent_outcomes=outcomes,
+                failure_target=args.failure_target,
+                correct_reference_target=args.correct_target,
+            )
+            _write_json(args.output, plan)
+            print(f"plan={args.output}")
+            return 0
+        elif args.command == "ms1-blind":
+            blind = build_blind_annotation_manifest(_read_json(args.plan))
+            _write_json(args.output, blind)
+            print(f"blind={args.output}")
+            return 0
+        elif args.command == "ms1-import-annotations":
+            plan = _read_json(args.plan)
+            independent = [row for path in args.independent for row in _read_records(path)]
+            third = [row for path in args.third_review for row in _read_records(path)]
+            imported = import_ms1_annotations(plan, independent, third)
+            _write_json(args.output, imported)
+            print(f"annotations={args.output}")
+            return 0
+        elif args.command == "ms1-analyze":
+            annotations = _read_json(args.annotations)
+            annotation_rows = (
+                annotations.get("paths", annotations)
+                if isinstance(annotations, dict)
+                else annotations
+            )
+            rederivations = _read_records(args.rederivations) if args.rederivations else []
+            report = analyze_ms1_dependency(annotation_rows, rederivations)
+            _write_json(args.output, report)
+            print(f"analysis={args.output}")
+            return 0
+        elif args.command == "ms1-export-cases":
+            report = _read_json(args.analysis)
+            output_path = write_ms1_case_export(report, args.path_id, args.output)
+            print(f"cases={output_path}")
+            return 0
         elif args.command == "prepare":
             snapshots = [load_snapshot(path) for path in args.snapshot]
             prepared = prepare_sample_manifest(snapshots, load_sampling_plan(args.plan))
@@ -226,7 +309,9 @@ def main(argv: list[str] | None = None) -> int:
             output_path = args.output or args.run_dir / "metrics" / "ms3-repair.json"
             _write_json(output_path, report)
             print(f"analysis={output_path}")
-            print(f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}")
+            print(
+                f"comparisons={json.dumps(report['comparisons'], ensure_ascii=False, sort_keys=True)}"
+            )
             return 0
         elif args.command == "ms3-diagnose":
             config = load_config(args.config)
@@ -293,6 +378,30 @@ def main(argv: list[str] | None = None) -> int:
         print(f"status={status}")
         return 1
     return 0
+
+
+def _read_json(path: Path) -> object:
+    """Read one JSON artifact without making network or model calls."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_records(path: Path | None) -> list[dict[str, object]]:
+    """Read a JSON array, JSON object, or JSONL record artifact."""
+    if path is None:
+        return []
+    try:
+        value = _read_json(path)
+    except json.JSONDecodeError:
+        rows = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    else:
+        rows = value if isinstance(value, list) else [value]
+    if any(not isinstance(row, dict) for row in rows):
+        raise TypeError(f"record artifact must contain objects: {path}")
+    return rows
 
 
 def _read_jsonl(path: Path) -> list[dict[str, object]]:

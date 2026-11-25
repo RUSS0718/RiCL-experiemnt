@@ -131,7 +131,13 @@ def main():
     p.add_argument("output", type=Path)
     a = p.parse_args()
     fig = draw(read(a.first), read(a.ms1))
-    fig.savefig(a.output.with_suffix(".svg"), metadata={"Date": None})
+    svg = a.output.with_suffix(".svg")
+    fig.savefig(svg, metadata={"Date": None})
+    # Matplotlib emits trailing spaces inside multiline path attributes.
+    lines = svg.read_text(encoding="utf-8").splitlines()
+    svg.write_text(
+        "\n".join(line.rstrip() for line in lines) + "\n", encoding="utf-8", newline="\n"
+    )
     fig.savefig(a.output.with_suffix(".pdf"), metadata={"CreationDate": None, "ModDate": None})
     fig.savefig(a.output.with_suffix(".png"), dpi=300)
     plt.close(fig)

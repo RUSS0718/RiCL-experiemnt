@@ -1,5 +1,8 @@
 # Research documentation map
 
+- [Motivation Study v1.0 stage report](motivation-study-report.md): reviewed findings, missingness, and offline replay.
+- [Motivation Study Morning Brief](motivation-study-morning-brief.md): one-page decision summary.
+
 - [Motivation Study first batch](motivation-study-first-batch.md): archived results and coverage.
 
 - [Motivation Study batch decision](motivation-study-batch-decision.md): offline coverage, proposed first batch, and spending gate.

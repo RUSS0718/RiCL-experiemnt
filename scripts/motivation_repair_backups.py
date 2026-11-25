@@ -1,6 +1,7 @@
 """Freeze the next two MS3-B backup lists under the original strata and seed."""
 
 import argparse
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -111,13 +112,30 @@ def qualify(frozen, reserve_path, review_root):
         if review["verdict"] not in ("qualified", "ineligible", "pending"):
             raise ValueError("invalid eligibility disposition")
         if review["verdict"] == "qualified":
-            claim = review.get("pre_error_claim") or {}
+            claim = review.get("pre_error_claim")
+            if isinstance(claim, str):
+                match = re.match(r"step\s+(\d+)\b", claim, re.IGNORECASE)
+                claim_step = int(match[1]) if match else None
+            else:
+                claim_step = (claim or {}).get("step_index")
+            first_error_confirmed = review.get("first_error_status") == "confirmed"
+            if review.get("first_error_status") == "verified":
+                match = re.search(r"\bindex\s+(\d+)\b", review["first_error_note"], re.IGNORECASE)
+                first_error_confirmed = bool(match and int(match[1]) == row["error"])
+            reference = review.get("reference_evidence")
+            if (
+                not reference
+                and review.get("provenance")
+                and isinstance(review.get("evidence"), dict)
+            ):
+                # The lower tail submitted its exact certificate under the shorter field name.
+                reference = review["evidence"]
             if not (
                 review.get("reference_status") == "verified"
-                and review.get("reference_evidence")
-                and review.get("first_error_status") == "confirmed"
-                and type(claim.get("step_index")) is int
-                and 0 <= claim["step_index"] < row["error"]
+                and reference
+                and first_error_confirmed
+                and type(claim_step) is int
+                and 0 <= claim_step < row["error"]
             ):
                 raise ValueError(
                     "eligible candidate has no verified reference, first error or prior claim"
@@ -144,9 +162,7 @@ def qualify(frozen, reserve_path, review_root):
         "layers": filled,
         "eligible_groups": len(selected),
         "eligible_by_source": Counter(available[g]["source"] for g in sorted(selected)),
-        "eligibility_gate_passed": all(
-            not v["shortage"] for v in filled.values()
-        ),
+        "eligibility_gate_passed": all(not v["shortage"] for v in filled.values()),
         "reviews_sha256": {p.name: digest(p) for p in sources},
         "decisions": list(answers.values()),
     }

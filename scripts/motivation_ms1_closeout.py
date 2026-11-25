@@ -10,6 +10,8 @@ from motivation_closeout import digest, read, write
 from ricl_experiment.analysis.ms1_dependency import analyze_ms1_dependency
 from ricl_experiment.motivation.ms1_dependency import import_ms1_annotations
 
+BOOTSTRAP_REPLICATES = 20_000
+
 
 def validate_rows(path, batch, reviewer, complete=True):
     rows = read(path)
@@ -37,11 +39,23 @@ def validate_rows(path, batch, reviewer, complete=True):
             ):
                 raise ValueError(f"definitive verdict lacks a check in {path.name}")
             status = node.get("dependency_status", {})
-            if isinstance(status, str) and status in ("confirmed", "excluded", "unknown"):
+            if isinstance(status, str) and status.casefold() in (
+                "confirmed",
+                "excluded",
+                "unknown",
+            ):
                 # Older review files record a single status for all listed edges.
-                node["dependency_status"] = dict.fromkeys(node.get("dependency_ids", []), status)
+                node["dependency_status"] = dict.fromkeys(
+                    node.get("dependency_ids", []), status.casefold()
+                )
+            elif isinstance(status, list):
+                # Batch 3B recorded edge statuses in dependency_ids order.
+                node["dependency_status"] = dict(zip(node["dependency_ids"], status, strict=True))
             prior.add(sid)
         anchor = row["first_error_step_id"]
+        if row["first_error_status"] == "unknown" and anchor in prior:
+            # A tentative location is not a confirmed first-error vote. Keep the raw review.
+            row["first_error_step_id"] = anchor = None
         if (row["first_error_status"] == "confirmed" and anchor not in prior) or (
             row["first_error_status"] != "confirmed" and anchor is not None
         ):
@@ -130,7 +144,7 @@ def intervals(paths, seed):
     if not paths:
         return {}
     rng = np.random.default_rng(seed)
-    indices = rng.integers(0, len(paths), (20_000, len(paths)))
+    indices = rng.integers(0, len(paths), (BOOTSTRAP_REPLICATES, len(paths)))
     intervals = {}
     for key in ("error_propagation_ratio", "reusable_claim_ratio"):
         value = np.array([[p[key][f] for f in ("numerator", "denominator")] for p in paths])
@@ -147,6 +161,12 @@ def intervals(paths, seed):
 def replay(frozen, batch_ids, third_root):
     review_root = frozen / "followup-review"
     blind = read(frozen / "ms1-blind.json")
+    # This blind export omits the sampling seed; use the frozen study seed for replay.
+    bootstrap_seed = blind["seed"]
+    if bootstrap_seed is None:
+        bootstrap_seed = read(frozen / "coverage.json")["seed"]
+    if type(bootstrap_seed) is not int:
+        raise ValueError("MS1 bootstrap requires an integer seed")
     source = {r["blind_id"]: r for r in read(frozen / "restricted/ms1-source.json")}
     by_id = {r["path_id"]: r for r in blind["paths"]}
     if len(by_id) != 30 or set(source) != by_id.keys():
@@ -173,14 +193,18 @@ def replay(frozen, batch_ids, third_root):
         pairs = import_ms1_annotations(plan, reviews)["paths"]
         conflicts = {r["path_id"] for r in pairs if consensus(r, None)[1]}
         packets[i] = [b for k, b in batch.items() if k in conflicts]
-        p = third_root / f"ms1-third-{i}.json" if third_root else None
         adjudications = {}
-        if p and p.is_file():
-            third = validate_rows(
-                p, {k: batch[k] for k in conflicts}, f"codex-third-{i}", complete=False
-            )
+        third = []
+        if third_root:
+            files = sorted(third_root.glob(f"ms1-third-{i}*.json"))
+            for p in files:
+                reviewer = p.stem.replace("ms1-", "codex-", 1)
+                third += validate_rows(
+                    p, {k: batch[k] for k in conflicts}, reviewer, complete=False
+                )
+                provenance[p.name] = digest(p)
+        if third:
             partial["third_records"] += len(third)
-            provenance[p.name] = digest(p)
             normalized = import_ms1_annotations(plan, reviews, third)["paths"]
             adjudications = {
                 r["path_id"]: r["third_review"] for r in normalized if r["third_review"]
@@ -221,12 +245,14 @@ def replay(frozen, batch_ids, third_root):
         by_label[label] = {
             "summary": a["summary"],
             "denominators": a["denominators"],
-            "descriptive_path_bootstrap95": intervals(a["paths"], blind["seed"]),
+            "descriptive_path_bootstrap95": intervals(a["paths"], bootstrap_seed),
         }
     summary = {
         "schema": 1,
         "reviewer_kind": "codex",
         "review_count": 2 * len(all_rows),
+        "bootstrap_seed": bootstrap_seed,
+        "bootstrap_replicates": BOOTSTRAP_REPLICATES,
         "coverage": partial,
         "agreement": paired_agreement,
         "comparison_to_public_labels": reference_comparison,
@@ -234,7 +260,7 @@ def replay(frozen, batch_ids, third_root):
         "by_source_label": by_label,
         "summary": analysis["summary"],
         "denominators": analysis["denominators"],
-        "descriptive_path_bootstrap95": intervals(analysis["paths"], blind["seed"]),
+        "descriptive_path_bootstrap95": intervals(analysis["paths"], bootstrap_seed),
     }
     return packets, summary, {"reconciled": all_rows, "analysis": analysis}
 

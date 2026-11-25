@@ -17,3 +17,23 @@
 - All analysis must remain reproducible offline without API credentials.
 - Real API execution requires an approved model, sample scope, and bounded budget.
 - Avoid unrelated refactoring before MS2/MS3 Pilot acceptance.
+
+## Research Lead Review Interface
+
+When requesting human approval, provide a concise, decision-oriented summary instead of dumping raw artifacts.
+
+The summary must contain:
+
+- Current finding and research status.
+- Blocking issues and their root causes.
+- Recommended decision and alternatives.
+- Exact next experiment scope.
+- Expected API calls, token usage, and maximum cost.
+- Acceptance criteria.
+- Explicit authorization boundaries.
+
+Keep machine-readable artifacts, hashes, ledgers, provenance, and detailed audit reports available for traceability, but do not require the research lead to inspect them routinely.
+
+Do not request repeated approval for unchanged decisions or ordinary implementation details.
+
+Human approval should focus on scientific validity, protocol changes, spending authority, and experiment progression.

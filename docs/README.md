@@ -1,5 +1,7 @@
 # Research documentation map
 
+- [Motivation Study first batch](motivation-study-first-batch.md): archived results and coverage.
+
 - [Motivation Study batch decision](motivation-study-batch-decision.md): offline coverage, proposed first batch, and spending gate.
 
 - [Motivation Study revised protocol](motivation-study-revised-protocol.md): decision page, feasibility archive, and proposed authorization boundaries.

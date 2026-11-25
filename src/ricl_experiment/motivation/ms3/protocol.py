@@ -302,7 +302,12 @@ def _usage(value: Any) -> dict[str, int] | None:
         for token in (input_tokens, output_tokens)
     ):
         return None
-    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    details = value.get("completion_tokens_details")
+    reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0:
+        usage["reasoning_tokens"] = reasoning
+    return usage
 
 
 def _steps(value: Any) -> list[str]:

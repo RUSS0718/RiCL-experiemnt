@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -111,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     repair.add_argument("--answer-key", required=True, type=Path)
     repair.add_argument("--config", required=True, type=Path)
     repair.add_argument("--artifacts-root", type=Path, default=Path("artifacts"))
+    repair.add_argument("--resume", metavar="RUN_ID", help="resume this existing repair run")
     repair.add_argument("--seed", type=int)
     repair.add_argument("--max-new-tokens", type=int)
     analysis = commands.add_parser(
@@ -127,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose.add_argument("--config", required=True, type=Path)
     diagnose.add_argument("--manifest", required=True, type=Path)
     diagnose.add_argument("--output", required=True, type=Path)
+    diagnose.add_argument("--resume", action="store_true", help="resume the run in --output")
     analyze = commands.add_parser(
         "ms3-analyze", help="analyze saved MS3 calls offline against the restricted audit"
     )
@@ -288,8 +291,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "ms3-repair":
             config = load_config(args.config)
             validate_api_key(config)
-            run_id = uuid.uuid4().hex
+            run_id = args.resume if args.resume is not None else uuid.uuid4().hex
+            if re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+                raise ValueError("invalid MS3 repair run ID")
             run_dir = args.artifacts_root.resolve() / "motivation" / run_id
+            print(f"run_id={run_id}", flush=True)
+            print(f"run_dir={run_dir}", flush=True)
             result = run_ms3_repair(
                 config,
                 args.snapshot,
@@ -299,12 +306,11 @@ def main(argv: list[str] | None = None) -> int:
                 run_dir,
                 seed=args.seed,
                 max_new_tokens=args.max_new_tokens,
+                resume=args.resume is not None,
             )
-            print(f"run_id={run_id}")
-            print(f"run_dir={run_dir}")
             print(f"calls={len(result['assignments'])}")
             print(f"usage={json.dumps(result['usage'], sort_keys=True)}")
-            return 0
+            return 0 if result["status"] == "completed" else 2
         elif args.command == "analyze-ms3-repair":
             evaluations_path = args.evaluations or args.run_dir / "blind" / "evaluations.jsonl"
             assignments_path = args.run_dir / "restricted" / "assignments.json"
@@ -324,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "ms3-diagnose":
             config = load_config(args.config)
             validate_api_key(config)
-            run = run_diagnosis(config, args.manifest, args.output)
+            run = run_diagnosis(config, args.manifest, args.output, resume=args.resume)
             print(f"run={args.output / 'run.json'}")
             print(f"status={run['status']}")
             return 0 if run["status"] == "completed" else 2

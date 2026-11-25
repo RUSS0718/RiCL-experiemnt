@@ -4,6 +4,8 @@ Issue #22 adds `ms3-pilot-check`, an offline gate over already persisted MS3 art
 
 ## Inputs and command
 
+After a scheduler interruption, pass `--resume` to `ms3-diagnose` with the original `--output` directory, or pass `--resume <run_id>` to `ms3-repair` with the original artifacts root. Keep the original inputs and model configuration. Both commands verify the request fingerprints and reuse committed responses from the existing ledger.
+
 Run the diagnosis and repair paths first, using the existing frozen manifest and restricted audit artifacts. The gate then reads only local JSON/JSONL/SQLite files:
 
 ```powershell

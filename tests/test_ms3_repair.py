@@ -6,6 +6,7 @@ import json
 import sqlite3
 
 import httpx
+import pytest
 
 from ricl_experiment.analysis.ms3_repair import analyze_repairs
 from ricl_experiment.cli import main
@@ -132,7 +133,7 @@ def test_run_dispatches_four_isolated_logical_calls_and_records_attempt_usage(tm
         "model": {"base_url": "http://localhost/v1", "model": "offline-test", "capabilities": {
             "supported_parameters": ["max_tokens", "temperature"], "required_parameters": ["max_tokens"]},
             "parameters": {"max_tokens": 24, "temperature": 0}},
-        "budget": {"max_attempts_per_call": 1, "max_reserved_output_tokens": 96},
+        "budget": {"max_attempts_per_call": 2, "max_reserved_output_tokens": 128},
     })
     seen = []
 
@@ -145,6 +146,8 @@ def test_run_dispatches_four_isolated_logical_calls_and_records_attempt_usage(tm
             return None
         def post(self, url, json, headers):
             seen.append(json)
+            if len(seen) == 2:
+                raise KeyboardInterrupt("simulated process interruption")
             request = httpx.Request("POST", url)
             return httpx.Response(200, request=request, json={
                 "id": f"response-{len(seen)}", "choices": [{"message": {"role": "assistant", "content": "x=1"}}],
@@ -155,11 +158,19 @@ def test_run_dispatches_four_isolated_logical_calls_and_records_attempt_usage(tm
     from ricl_experiment.core import model
     monkeypatch.setattr(model.httpx, "Client", ControlledClient)
     output = tmp_path / "run"
+    with pytest.raises(KeyboardInterrupt):
+        run_ms3_repair(config, snapshot, manifest, audit, answer_key, output, max_new_tokens=16)
+    with pytest.raises(ValueError, match="seed changed"):
+        run_ms3_repair(
+            config, snapshot, manifest, audit, answer_key, output,
+            seed=18, max_new_tokens=16, resume=True,
+        )
+    assert len(seen) == 2
     result = run_ms3_repair(
-        config, snapshot, manifest, audit, answer_key, output, max_new_tokens=16
+        config, snapshot, manifest, audit, answer_key, output, max_new_tokens=16, resume=True
     )
 
-    assert len(seen) == 4
+    assert len(seen) == 5
     assert [row["group"] for row in result["assignments"]] == list(GROUPS)
     assert len({json.dumps(body, sort_keys=True) for body in seen}) == 4
     assert all("source-model" not in body["messages"][0]["content"] for body in seen)
@@ -173,10 +184,12 @@ def test_run_dispatches_four_isolated_logical_calls_and_records_attempt_usage(tm
     assert all(row["repair_success"] == "missing" for row in blind)
     with sqlite3.connect(output / "run.sqlite3") as db:
         assert db.execute("SELECT COUNT(*) FROM logical_calls").fetchone()[0] == 4
-        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 4
+        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 5
         assert db.execute(
-            "SELECT DISTINCT input_tokens, output_tokens, reasoning_tokens FROM attempts"
-        ).fetchall() == [(11, 4, 2)]
+            "SELECT DISTINCT input_tokens, output_tokens, reasoning_tokens FROM attempts ORDER BY input_tokens"
+        ).fetchall() == [(None, None, None), (11, 4, 2)]
+    metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == "completed"
 
     for row, status in zip(blind, ("incorrect", "correct", "correct", "correct"), strict=True):
         row["repair_success"] = status

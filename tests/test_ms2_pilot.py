@@ -380,6 +380,7 @@ def test_controlled_local_runner_trace_is_consumable_without_real_readiness_clai
                     "temperature = 0",
                     "",
                     "[ms2]",
+                    'protocol_version = "legacy-v1"',
                     "initial_max_tokens = 8",
                     "continuation_max_tokens = 8",
                     "",

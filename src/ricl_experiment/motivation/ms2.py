@@ -45,6 +45,7 @@ ADJUSTMENT_GENERATION_INSTRUCTIONS = (
     "Do not include a final-answer line or state the final result. End at a meaningful, unfinished step."
 )
 ADJUSTMENT_EARLY_ANSWER_RULE = "ms2-prose-result-v1"
+HISTORICAL_ADJUSTMENT = "adjustment-v1-before-prose-rule"
 _PROSE_RESULT = re.compile(
     r"\bthe (?:final answer|result) is\s+"
     r"(?:\\\(([+-]?\d+(?:\.\d+)?)\\\)|\$([+-]?\d+(?:\.\d+)?)\$|"
@@ -57,50 +58,117 @@ ADJUSTMENT_CONTINUATION_INSTRUCTIONS = (
 )
 
 
-def _generation_template_version(manifest: MS2Manifest) -> str:
-    return (
-        ADJUSTMENT_GENERATION_TEMPLATE_VERSION
-        if manifest.phase == "adjustment_validation"
-        else GENERATION_TEMPLATE_VERSION
-    )
+V2_GENERATION_TEMPLATE_VERSION = "ms2-local-subgoal-v2"
+V2_GENERATION_INSTRUCTIONS = (
+    "Develop exactly one local, verifiable subgoal of a possible solution. Show the statement, "
+    "conditions, and derivation of that subgoal, then stop. Choose a subgoal that leaves a "
+    "substantive mathematical step for later. Do not evaluate, give, or imply the requested "
+    "final result or write a final-answer line."
+)
+V2_STARTERS = (
+    ("direct_relations", "Start by establishing useful relations directly from the givens."),
+    ("structure_or_invariant", "Start by looking for a useful structure, symmetry, or invariant."),
+    ("alternative_representation", "Start by reformulating the problem in another representation."),
+)
 
 
-def _continuation_template_version(manifest: MS2Manifest) -> str:
-    return (
-        ADJUSTMENT_CONTINUATION_TEMPLATE_VERSION
-        if manifest.phase == "adjustment_validation"
-        else CONTINUATION_TEMPLATE_VERSION
-    )
+def _resolve_protocol(config: RunConfig, phase: str, *, resume: bool = False) -> str:
+    if config.ms2.protocol_version is not None:
+        return config.ms2.protocol_version
+    if not resume:
+        raise ValueError("a new MS2 run requires an explicit ms2.protocol_version")
+    # Older runs used phase to select the protocol. Keep their fingerprints and requests.
+    return "adjustment-v1" if phase == "adjustment_validation" else "legacy-v1"
 
 
-def _continuation_instructions(manifest: MS2Manifest) -> str:
-    return (
-        ADJUSTMENT_CONTINUATION_INSTRUCTIONS
-        if manifest.phase == "adjustment_validation"
-        else CONTINUATION_INSTRUCTIONS
-    )
+def _generation_template_version(protocol: str) -> str:
+    return {
+        "legacy-v1": GENERATION_TEMPLATE_VERSION,
+        "adjustment-v1": ADJUSTMENT_GENERATION_TEMPLATE_VERSION,
+        HISTORICAL_ADJUSTMENT: ADJUSTMENT_GENERATION_TEMPLATE_VERSION,
+        "ms2-v2": V2_GENERATION_TEMPLATE_VERSION,
+    }[protocol]
 
 
-def _generation_prompt_fingerprint(manifest: MS2Manifest) -> str:
-    if manifest.phase != "adjustment_validation":
+def _generation_instructions(protocol: str) -> str | None:
+    return {
+        "legacy-v1": None,
+        "adjustment-v1": ADJUSTMENT_GENERATION_INSTRUCTIONS,
+        HISTORICAL_ADJUSTMENT: ADJUSTMENT_GENERATION_INSTRUCTIONS,
+        "ms2-v2": V2_GENERATION_INSTRUCTIONS,
+    }[protocol]
+
+
+def _continuation_template_version(protocol: str) -> str:
+    if protocol == "legacy-v1":
+        return CONTINUATION_TEMPLATE_VERSION
+    return ADJUSTMENT_CONTINUATION_TEMPLATE_VERSION
+
+
+def _continuation_instructions(protocol: str) -> str:
+    if protocol == "legacy-v1":
+        return CONTINUATION_INSTRUCTIONS
+    return ADJUSTMENT_CONTINUATION_INSTRUCTIONS
+
+
+def _generation_prompt_fingerprint(manifest: MS2Manifest, protocol: str) -> str:
+    if protocol == "legacy-v1":
         return fingerprint([sample.problem for sample in manifest.samples])
-    return fingerprint({
-        "template_version": _generation_template_version(manifest),
-        "instruction": ADJUSTMENT_GENERATION_INSTRUCTIONS,
-        "early_answer_rule": ADJUSTMENT_EARLY_ANSWER_RULE,
+    contract = {
+        "template_version": _generation_template_version(protocol),
+        "instruction": _generation_instructions(protocol),
         "problems": [sample.problem for sample in manifest.samples],
-    })
+    }
+    if protocol != HISTORICAL_ADJUSTMENT:
+        contract["early_answer_rule"] = ADJUSTMENT_EARLY_ANSWER_RULE
+    if protocol == "ms2-v2":
+        contract.update(
+            starter_strategies=V2_STARTERS,
+            continuation=_continuation_instructions(protocol),
+            answer_rule="closed-answer-ms2-v2",
+        )
+    return fingerprint(contract)
 
 
-def _prefix_for_answer_evaluation(prefix: str, phase: str) -> str:
+def _checkpoint_caps(config: RunConfig, manifest: MS2Manifest, protocol: str) -> dict[str, int]:
+    if protocol != "ms2-v2":
+        return {sample.sample_id: config.ms2.initial_max_tokens for sample in manifest.samples}
+    strata = config.ms2.checkpoint_tokens_by_stratum or {}
+    missing = {sample.sampling_stratum for sample in manifest.samples} - strata.keys()
+    if missing:
+        raise ValueError(f"MS2 v2 Checkpoint caps missing for sampling strata: {sorted(map(str, missing))}")
+    caps = {sample.sample_id: strata[sample.sampling_stratum] for sample in manifest.samples}
+    score_tokens = int(config.model.parameters["max_tokens"])
+    planned = 3 * (
+        sum(caps.values()) + len(caps) * (2 * config.ms2.continuation_max_tokens + 3 * score_tokens)
+    ) * config.budget.max_attempts_per_call
+    if config.budget.max_reserved_output_tokens < planned:
+        raise ValueError(f"MS2 v2 output-token budget must reserve {planned} tokens for all attempts")
+    return caps
+
+
+def _prefix_for_answer_evaluation(prefix: str, protocol: str) -> str:
     """Expose explicit numeric prose results to the existing answer classifier."""
-    if phase != "adjustment_validation":
+    if protocol not in {"adjustment-v1", "adjustment_validation", "ms2-v2"}:
         return prefix
+    if protocol == "ms2-v2":
+        prefix = _v2_answer_text(prefix)
     markers = [
         f"Final answer: {next(value for value in match.groups() if value is not None)}"
         for match in _PROSE_RESULT.finditer(prefix)
     ]
     return "\n".join([prefix, *markers])
+
+
+def _v2_answer_text(text: str) -> str:
+    text = re.sub(r"(?m)^([ \t]*)####(?=[ \t]+[A-Za-z])", r"\1###", text)
+    text = re.sub(r"\\frac(\d)(\d)(?!\d)", r"\\frac{\1}{\2}", text)
+    return re.sub(
+        r"(?m)^([ \t]*(?:Final answer|Answer):[ \t]*)\\\((.+?)\\\)[ \t]*\.?[ \t]*$",
+        r"\1\2",
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 class MS2RunError(RuntimeError):
@@ -118,18 +186,20 @@ def start_ms2_run(
     config, manifest, answer_bytes, answers = _inputs(config_path, manifest_path, answer_key_path)
     if phase != manifest.phase:
         raise ValueError("--phase must match the frozen MS2 manifest phase")
+    protocol = _resolve_protocol(config, manifest.phase)
+    caps = _checkpoint_caps(config, manifest, protocol)
     run_id = uuid.uuid4().hex
     run_dir = _run_dir(artifacts_root, run_id)
     run_dir.mkdir(parents=True, exist_ok=False)
     restricted = run_dir / "restricted"
     restricted.mkdir()
     (restricted / "answer-key.json").write_bytes(answer_bytes)
-    metadata = _metadata(run_id, config, manifest, answer_bytes)
+    metadata = _metadata(run_id, config, manifest, answer_bytes, protocol)
     _write_json(run_dir / "metadata.json", metadata)
     _write_json(run_dir / "config.json", config.redacted())
     _write_json(run_dir / "manifest.json", manifest.model_dump(mode="json"))
     with _run_lock(run_dir):
-        return _execute(run_id, run_dir, config, manifest, answers)
+        return _execute(run_id, run_dir, config, manifest, answers, protocol, caps)
 
 
 def resume_ms2_run(
@@ -150,7 +220,14 @@ def resume_ms2_run(
     )
     run_dir = _run_dir(artifacts_root, run_id)
     metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
-    expected = _metadata(run_id, config, manifest, answer_bytes)
+    protocol = _resolve_protocol(config, manifest.phase, resume=True)
+    if config.ms2.protocol_version is None and protocol == "adjustment-v1" and (
+        metadata.get("prompt_fingerprint")
+        == _generation_prompt_fingerprint(manifest, HISTORICAL_ADJUSTMENT)
+    ):
+        protocol = HISTORICAL_ADJUSTMENT
+    caps = _checkpoint_caps(config, manifest, protocol)
+    expected = _metadata(run_id, config, manifest, answer_bytes, protocol)
     for key in (
         "config_fingerprint",
         "manifest_fingerprint",
@@ -159,9 +236,10 @@ def resume_ms2_run(
         "generation_template_version",
         "continuation_template_version",
         "scoring_template_versions",
+        "protocol_version",
     ):
         if key == "generation_template_version" and key not in metadata:
-            if metadata.get("phase") == "adjustment_validation":
+            if protocol != "legacy-v1":
                 raise MS2RunError("resume rejected: generation template version is missing")
             continue
         if metadata.get(key) != expected[key]:
@@ -171,7 +249,11 @@ def resume_ms2_run(
     if (run_dir / "restricted" / "answer-key.json").read_bytes() != answer_bytes:
         raise MS2RunError("resume rejected: restricted answer key changed")
     with _run_lock(run_dir):
-        return _execute(run_id, run_dir, config, manifest, answers)
+        # A completed historical run already has its frozen export.
+        live_metadata = json.loads((run_dir / "metadata.json").read_bytes())
+        if live_metadata.get("status") == "completed" and (run_dir / "traces/ms2.json").is_file():
+            return run_id, "completed"
+        return _execute(run_id, run_dir, config, manifest, answers, protocol, caps)
 
 
 def _inputs(
@@ -204,6 +286,8 @@ def _execute(
     config: RunConfig,
     manifest: MS2Manifest,
     answers: dict[str, MS2AnswerKeyRow],
+    protocol: str,
+    caps: dict[str, int],
 ) -> tuple[str, str]:
     """Reconcile generation and rollout calls against the shared SQLite ledger."""
     ledger = Ledger(run_dir / "run.sqlite3", config.budget.max_reserved_output_tokens)
@@ -227,11 +311,16 @@ def _execute(
                     ).hexdigest(),
                 }
                 generation_id = _logical_call_id(run_id, candidate_id, "initial")
-                generation_parameters = _parameters(config, config.ms2.initial_max_tokens)
+                generation_parameters = _parameters(config, caps[sample.sample_id])
                 _seed(generation_parameters, config, manifest, generation_id)
                 generation_fields = {"problem": sample.problem}
-                if manifest.phase == "adjustment_validation":
-                    generation_fields["instruction"] = ADJUSTMENT_GENERATION_INSTRUCTIONS
+                generation_instructions = _generation_instructions(protocol)
+                if protocol == "ms2-v2":
+                    strategy, starter = V2_STARTERS[index]
+                    candidate.update(starting_strategy=strategy, checkpoint_max_tokens=caps[sample.sample_id])
+                    generation_instructions = f"{generation_instructions} {starter}"
+                if generation_instructions is not None:
+                    generation_fields["instruction"] = generation_instructions
                 try:
                     response_ref = dispatch_call(
                         config,
@@ -294,14 +383,18 @@ def _execute(
                 candidate.update(
                     _checkpoint(candidate_id, generation_id, prefix, response_ref, payload, stop_reason, True)
                 )
-                evaluation_prefix = _prefix_for_answer_evaluation(prefix, manifest.phase)
+                evaluation_prefix = _prefix_for_answer_evaluation(prefix, protocol)
                 decision = classify_answer(evaluation_prefix, answer.reference_answer)
-                if evaluation_prefix != prefix:
+                if protocol == "ms2-v2":
+                    candidate["visible_final_answer"] = decision.extracted_answer is not None
+                elif evaluation_prefix != prefix:
                     candidate["visible_final_answer"] = True
                 category = {
                     "correct": "early_correct",
                     "incorrect": "early_incorrect",
                 }.get(decision.status.value, "early_unknown")
+                if protocol == "ms2-v2":
+                    candidate["checkpoint_review_required"] = candidate["prefix_status"] == "available"
                 candidate["generation_status"] = "completed"
                 generation_audit = ledger.call_audit(generation_id)
                 candidate["source_attempt_id"] = generation_audit["owner_attempt_id"]
@@ -311,7 +404,7 @@ def _execute(
                     decision.status.value,
                     category,
                     extracted_answer=decision.extracted_answer,
-                    rule_version=decision.rule_version,
+                    rule_version="closed-answer-ms2-v2" if protocol == "ms2-v2" else decision.rule_version,
                     reason=decision.reason,
                     reference={"answer_key_ref": "restricted/answer-key.json", "sample_id": sample.sample_id},
                 )
@@ -335,7 +428,7 @@ def _execute(
                             problem=sample.problem,
                             checkpoint=prefix,
                             review_extracted_claims=True,
-                            json_evidence=manifest.phase == "adjustment_validation",
+                            json_evidence=protocol != "legacy-v1",
                         )
                         candidate["scoring_artifact_ref"] = score["artifact_ref"]
                     except ModelDispatchError as error:
@@ -372,7 +465,7 @@ def _execute(
                                 {
                                     "problem": sample.problem,
                                     "checkpoint": prefix,
-                                    "instruction": _continuation_instructions(manifest),
+                                    "instruction": _continuation_instructions(protocol),
                                 },
                                 parameters,
                             )
@@ -389,6 +482,7 @@ def _execute(
                                 rollout_payload,
                                 answer,
                                 sample.sample_id,
+                                protocol,
                             )
                             start = len(prefix)
                             candidate["segments"].append(
@@ -443,14 +537,15 @@ def _execute(
             run_id,
             manifest,
             fingerprint(manifest.model_dump(mode="json")),
-            generation_template_version=_generation_template_version(manifest),
-            generation_instructions=(
-                ADJUSTMENT_GENERATION_INSTRUCTIONS
-                if manifest.phase == "adjustment_validation" else None
-            ),
-            continuation_template_version=_continuation_template_version(manifest),
-            continuation_instructions=_continuation_instructions(manifest),
+            generation_template_version=_generation_template_version(protocol),
+            generation_instructions=_generation_instructions(protocol),
+            continuation_template_version=_continuation_template_version(protocol),
+            continuation_instructions=_continuation_instructions(protocol),
         )
+        if config.ms2.protocol_version is not None:
+            trace["protocol_version"] = protocol
+        if protocol == "ms2-v2":
+            trace["starter_strategies"] = dict(V2_STARTERS)
         trace["samples"] = exported_samples
         trace["usage"] = ledger.usage_summary()
         trace = MS2Trace.model_validate(trace).model_dump(mode="json")
@@ -506,9 +601,11 @@ def _rollout(
     payload: dict[str, Any],
     answer: MS2AnswerKeyRow,
     sample_id: str,
+    protocol: str,
 ) -> dict[str, Any]:
-    decision = classify_answer(text, answer.reference_answer)
-    return {
+    evaluation_text = _v2_answer_text(text) if protocol == "ms2-v2" else text
+    decision = classify_answer(evaluation_text, answer.reference_answer)
+    rollout = {
         "rollout_index": index,
         "status": "completed",
         "logical_call_id": call_id,
@@ -525,10 +622,14 @@ def _rollout(
             decision.status.value,
             extracted_answer=decision.extracted_answer,
             normalized_answer=decision.normalized_answer,
-            rule_version=decision.rule_version,
+            rule_version="closed-answer-ms2-v2" if protocol == "ms2-v2" else decision.rule_version,
             reason=decision.reason,
         ),
     }
+    if protocol == "ms2-v2":
+        rollout["finish_reason"] = payload["choices"][0].get("finish_reason")
+        rollout["evaluation_reference"]["method"] = "closed-answer-ms2-v2"
+    return rollout
 
 
 def _failed_rollout(
@@ -593,7 +694,10 @@ def _seed(
 ) -> None:
     if "seed" not in config.model.capabilities.supported_parameters:
         return
-    sampling = manifest.model_extra.get("sampling", {}) if manifest.model_extra else {}
+    sampling = (
+        manifest.sampling if config.ms2.protocol_version == "ms2-v2"
+        else (manifest.model_extra or {}).get("sampling")
+    )
     seed = sampling.get("seed") if isinstance(sampling, dict) else None
     if type(seed) is int and seed >= 0:
         digest = hashlib.sha256(f"{seed}:{call_id}".encode()).digest()
@@ -662,7 +766,7 @@ def _attempt_usage(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _metadata(
-    run_id: str, config: RunConfig, manifest: MS2Manifest, answer_bytes: bytes
+    run_id: str, config: RunConfig, manifest: MS2Manifest, answer_bytes: bytes, protocol: str
 ) -> dict[str, Any]:
     manifest_data = manifest.model_dump(mode="json")
     return {
@@ -676,21 +780,22 @@ def _metadata(
         "config_fingerprint": fingerprint(config.redacted()),
         "manifest_fingerprint": fingerprint(manifest_data),
         "answer_key_fingerprint": hashlib.sha256(answer_bytes).hexdigest(),
-        "prompt_fingerprint": _generation_prompt_fingerprint(manifest),
-        "generation_template_version": _generation_template_version(manifest),
+        "prompt_fingerprint": _generation_prompt_fingerprint(manifest, protocol),
+        "protocol_version": config.ms2.protocol_version,
+        "generation_template_version": _generation_template_version(protocol),
         "experiment_id": manifest.manifest_id,
         "model": config.model.model,
         "endpoint": config.model.base_url,
         "effective_parameters": config.model.parameters,
-        "ms2_parameters": config.ms2.model_dump(mode="json"),
-        "continuation_template_version": _continuation_template_version(manifest),
+        "ms2_parameters": config.ms2.model_dump(mode="json", exclude_none=True),
+        "continuation_template_version": _continuation_template_version(protocol),
         "scoring_template_versions": (
             [
                 RATER_TEMPLATE_VERSION,
                 "ms2-evidence-extraction-json-v1",
                 "ms2-evidence-review-json-v1",
             ]
-            if config.ms2.score_checkpoints and manifest.phase == "adjustment_validation"
+            if config.ms2.score_checkpoints and protocol != "legacy-v1"
             else [RATER_TEMPLATE_VERSION, EVIDENCE_TEMPLATE_VERSION, EVIDENCE_REVIEW_TEMPLATE_VERSION]
             if config.ms2.score_checkpoints else None
         ),

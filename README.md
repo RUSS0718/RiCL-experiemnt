@@ -20,18 +20,18 @@ uv run python -m ricl_experiment run `
   --manifest configs/examples/single-sample.json
 ```
 
-MS2 控制样例使用受控或真实 OpenAI-compatible endpoint，不把答案键传给生成请求：
+新的 MS2 Run 要在配置中显式指定 `[ms2]` 的 `protocol_version`。历史续跑沿用原配置。新版隔离复验的配置和审核入口见 [MS2 v2 协议](docs/ms2-v2-protocol.md)。下面的示例从准备好的 MS2 清单和显式协议配置启动。
 
 ```powershell
 uv run python -m ricl_experiment ms2 run `
   --phase pilot `
-  --config configs/models/default.toml `
+  --config <frozen-ms2-config.toml> `
   --manifest <prepared-ms2-manifest.json> `
   --answer-key <restricted/answer-key.json>
 
 uv run python -m ricl_experiment ms2 resume `
   --run-id <run_id> `
-  --config configs/models/default.toml `
+  --config <frozen-ms2-config.toml> `
   --manifest <prepared-ms2-manifest.json> `
   --answer-key <restricted/answer-key.json>
 ```

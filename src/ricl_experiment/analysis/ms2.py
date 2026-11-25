@@ -25,6 +25,14 @@ def route_flow_status(candidate: Mapping[str, Any]) -> str:
     prefix_status = candidate.get("prefix_status")
     if prefix_status != "available":
         return f"prefix_{prefix_status if isinstance(prefix_status, str) else 'missing'}"
+    if candidate.get("checkpoint_review_required"):
+        verdict = (candidate.get("checkpoint_review") or {}).get("verdict")
+        return {
+            "correct": "early_correct",
+            "incorrect": "eligible",
+            "unknown": "early_unknown",
+            "no_final_answer": "eligible",
+        }.get(verdict, "checkpoint_review_pending")
     evaluation = candidate.get("initial_evaluation")
     evaluation = evaluation if isinstance(evaluation, Mapping) else {}
     category = evaluation.get("analysis_category")
@@ -239,6 +247,8 @@ def _prepare_sample(
                 diagnostics["incomplete_eligible_routes"] += 1
         route_records.append(route)
     reasons = sorted({reason for route in route_records for reason in route.get("reasons", [])})
+    if any(route["flow_status"] == "checkpoint_review_pending" for route in route_records):
+        reasons.append("checkpoint_review_pending")
     if len(qualified) < 2:
         reasons.append("fewer_than_two_eligible_routes")
     parsed = [route for route in qualified if not route.get("reasons")]

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .analysis.ms1_dependency import analyze_ms1_dependency, write_ms1_case_export
 from .analysis.ms2 import write_ms2_analysis
+from .analysis.ms2_budget import continuation_budget_report
 from .analysis.ms3_pilot import write_ms3_pilot_artifacts
 from .analysis.ms3_repair import analyze_repairs
 from .config import load_config, validate_api_key
@@ -22,6 +23,7 @@ from .datasets.manifest import (
     write_overlap_report,
     write_prepared_manifest,
 )
+from .evaluation.ms2_review import export_answer_review, import_answer_reviews, read_reviewed_trace
 from .motivation.ms1_dependency import (
     build_blind_annotation_manifest,
     build_ms1_sampling_plan,
@@ -161,10 +163,25 @@ def build_parser() -> argparse.ArgumentParser:
     ms2_analysis.add_argument("--scoring-dir", type=Path)
     ms2_analysis.add_argument("--bootstrap-samples", type=int, default=10_000)
     ms2_analysis.add_argument("--seed", type=int, default=2026)
+    ms2_review = commands.add_parser("ms2-answer-review", help="export and import offline MS2 reviews")
+    review_commands = ms2_review.add_subparsers(dest="review_command", required=True)
+    for action in ("export", "import"):
+        review = review_commands.add_parser(action)
+        review.add_argument("--run-dir", type=Path, required=True)
+        review.add_argument("--output", type=Path, required=True)
+        if action == "import":
+            review.add_argument("--bundle", type=Path, help="use the original run directory by default")
+            review.add_argument("--reviews", type=Path, required=True)
+    ms2_budget = commands.add_parser("ms2-budget", help="audit saved MS2 continuation usage and cutoffs")
+    ms2_budget.add_argument("--run-dir", type=Path, required=True)
+    ms2_budget.add_argument("--reviewed-trace", type=Path)
+    ms2_budget.add_argument("--cutoff", type=int, action="append", required=True)
+    ms2_budget.add_argument("--output", type=Path, required=True)
     ms2_pilot = commands.add_parser("ms2-pilot-check", help="verify a saved MS2 Pilot offline")
     ms2_pilot.add_argument("--run-dir", required=True, type=Path)
     ms2_pilot.add_argument("--output", type=Path)
     ms2_pilot.add_argument("--requests", type=Path, help="audited request export for older runs")
+    ms2_pilot.add_argument("--reviewed-trace", type=Path)
     ms2_pilot.add_argument("--reported-metrics", type=Path)
     ms2_pilot.add_argument("--planning", type=Path)
     ms2_pilot.add_argument("--external-evidence", type=Path)
@@ -349,10 +366,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"analysis={output_path}")
             print(f"coverage_figure={output_path.with_name(f'{output_path.stem}-coverage.png')}")
             return 0
+        elif args.command == "ms2-answer-review":
+            if args.review_command == "export":
+                export_answer_review(args.run_dir, args.output)
+            else:
+                import_answer_reviews(args.run_dir, args.reviews, args.output, bundle=args.bundle)
+            print(f"review_artifact={args.output}")
+            return 0
+        elif args.command == "ms2-budget":
+            report = continuation_budget_report(
+                args.run_dir, args.cutoff, reviewed_trace=args.reviewed_trace,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            with args.output.open("x", encoding="utf-8") as file:
+                json.dump(report, file, ensure_ascii=False, indent=2)
+                file.write("\n")
+            print(f"budget_report={args.output}")
+            return 0
         elif args.command == "ms2-pilot-check":
             output = args.output or args.run_dir / "metrics" / "pilot-gate.json"
+            reviewed = None
+            if args.reviewed_trace is not None:
+                reviewed = read_reviewed_trace(
+                    (args.run_dir / "traces/ms2.json").read_bytes(), args.reviewed_trace,
+                )
+                if reviewed["offline_review"].get("status") != "complete":
+                    raise ValueError("Pilot gate needs a complete offline review")
+                if output.exists():
+                    raise FileExistsError("reviewed Pilot gate output must be new")
             report = write_pilot_report(
-                args.run_dir, output,
+                args.run_dir, output, trace=reviewed,
                 requests=args.requests,
                 reported_metrics=args.reported_metrics,
                 planning=args.planning,
@@ -396,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
             output_path = write_overlap_report(args.left, args.right, args.output)
             print(f"overlap_report={output_path}")
             return 0
-    except (OSError, TypeError, ValueError, RuntimeError) as error:
+    except (OSError, TypeError, ValueError, RuntimeError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     print(f"run_id={run_id}")

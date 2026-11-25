@@ -7,7 +7,7 @@ import json
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -90,6 +90,19 @@ class MS2Settings(StrictModel):
     initial_max_tokens: int = Field(default=1500, ge=1)
     continuation_max_tokens: int = Field(default=2000, ge=1)
     score_checkpoints: bool = False
+    protocol_version: Literal["legacy-v1", "adjustment-v1", "ms2-v2"] | None = None
+    checkpoint_tokens_by_stratum: dict[str, Annotated[int, Field(strict=True, ge=1)]] | None = None
+
+    @model_validator(mode="after")
+    def validate_stratified_budgets(self) -> MS2Settings:
+        if self.protocol_version == "ms2-v2":
+            if not self.checkpoint_tokens_by_stratum:
+                raise ValueError("MS2 v2 requires explicit Checkpoint caps by sampling stratum")
+            if not self.score_checkpoints:
+                raise ValueError("MS2 v2 requires Checkpoint scoring")
+        elif self.checkpoint_tokens_by_stratum is not None:
+            raise ValueError("Checkpoint caps by sampling stratum require MS2 v2")
+        return self
 
 
 class RunConfig(StrictModel):
@@ -112,6 +125,7 @@ class RunConfig(StrictModel):
     def redacted(self) -> dict[str, Any]:
         """Return serializable configuration metadata without credential values."""
         data = self.model_dump(mode="json")
+        data["ms2"] = self.ms2.model_dump(mode="json", exclude_none=True)
         if not self.ms2.score_checkpoints:
             # Preserve the fingerprint of runs created before scoring was integrated.
             del data["ms2"]["score_checkpoints"]

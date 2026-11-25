@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import ClassVar
@@ -120,6 +121,7 @@ def ms2_endpoint():
 def write_ms2_inputs(
     tmp_path: Path, endpoint: str, *, budget: int = 72, phase: str = "pilot"
 ) -> tuple[Path, Path, Path, Path]:
+    protocol = "adjustment-v1" if phase == "adjustment_validation" else "legacy-v1"
     config = tmp_path / "model.toml"
     config.write_text(
         "\n".join(
@@ -137,6 +139,7 @@ def write_ms2_inputs(
                 "temperature = 0",
                 "",
                 "[ms2]",
+                f'protocol_version = "{protocol}"',
                 "initial_max_tokens = 8",
                 "continuation_max_tokens = 8",
                 "",
@@ -317,6 +320,30 @@ def test_adjustment_validation_freezes_checkpoint_and_json_evidence_contract(tmp
     assert run_ms2("resume", config, manifest, answer_key, artifacts, run_id).returncode == 0
     assert len(MS2ControlledEndpoint.requests) == before_resume
 
+    # Pre-prose smoke runs predate the explicit config field and the early-rule hash.
+    from ricl_experiment.config import load_config
+
+    historical_config = config.read_text(encoding="utf8").replace(
+        'protocol_version = "adjustment-v1"\n', ""
+    )
+    config.write_text(historical_config, encoding="utf8")
+    metadata.pop("protocol_version")
+    metadata["config_fingerprint"] = fingerprint(load_config(config).redacted())
+    metadata["prompt_fingerprint"] = fingerprint({
+        "template_version": trace["generation_template_version"],
+        "instruction": trace["generation_instructions"],
+        "problems": ["What is 6 times 7?"],
+    })
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf8")
+    frozen_trace = (run_dir / "traces/ms2.json").read_bytes()
+    assert run_ms2("resume", config, manifest, answer_key, artifacts, run_id).returncode == 0
+    assert (run_dir / "traces/ms2.json").read_bytes() == frozen_trace
+    assert len(MS2ControlledEndpoint.requests) == before_resume
+    metadata["prompt_fingerprint"] = "invalid"
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf8")
+    assert run_ms2("resume", config, manifest, answer_key, artifacts, run_id).returncode == 2
+    assert len(MS2ControlledEndpoint.requests) == before_resume
+
 
 def test_ms2_cli_keeps_three_routes_and_two_isolated_rollouts(tmp_path, ms2_endpoint):
     config, manifest, answer_key, artifacts = write_ms2_inputs(tmp_path, ms2_endpoint)
@@ -443,3 +470,165 @@ def test_adjustment_checkpoint_detects_explicit_numeric_result_in_prose():
     assert _prefix_for_answer_evaluation(prefix, "pilot") == prefix
     conflicting = prefix + "\nFinal answer: 24"
     assert classify_answer(_prefix_for_answer_evaluation(conflicting, "adjustment_validation"), "23").status == "blind_review"
+
+
+def test_v2_protocol_remains_explicit_across_phase_and_reviews(tmp_path, ms2_endpoint):
+    from ricl_experiment.analysis.ms2 import route_flow_status
+    from ricl_experiment.analysis.ms2_budget import continuation_budget_report
+
+    config, manifest, answer_key, artifacts = write_ms2_inputs(
+        tmp_path, ms2_endpoint, budget=270, phase="confirmatory"
+    )
+    original_config = config.read_text(encoding="utf-8").replace(
+        'protocol_version = "legacy-v1"\n', ""
+    )
+    config.write_text(original_config, encoding="utf-8")
+    failure = run_ms2("run", config, manifest, answer_key, artifacts)
+    assert failure.returncode == 2
+    assert "requires an explicit ms2.protocol_version" in failure.stderr
+    samples = json.loads(manifest.read_bytes())
+    for phase in ("pilot", "adjustment_validation"):
+        manifest.write_text(json.dumps({**samples, "phase": phase}), encoding="utf-8")
+        failure = run_ms2("run", config, manifest, answer_key, artifacts)
+        assert failure.returncode == 2
+        assert "requires an explicit ms2.protocol_version" in failure.stderr
+    samples["samples"][0]["sampling_stratum"] = "short"
+    manifest.write_text(json.dumps(samples), encoding="utf-8")
+    v2_config = original_config.replace(
+        "[ms2]", '[ms2]\nprotocol_version = "ms2-v2"\nscore_checkpoints = true'
+    ).replace("[budget]", "[ms2.checkpoint_tokens_by_stratum]\nshort = 5\n\n[budget]")
+    config.write_text(v2_config.replace("= 270", "= 269"), encoding="utf-8")
+    budget_failure = run_ms2("run", config, manifest, answer_key, artifacts)
+    assert budget_failure.returncode == 2
+    assert "must reserve 270" in budget_failure.stderr
+    assert not MS2ControlledEndpoint.requests
+    assert not artifacts.exists()
+
+    config.write_text(v2_config, encoding="utf-8")
+    result = run_ms2("run", config, manifest, answer_key, artifacts)
+    assert result.returncode == 0, result.stderr
+    run_id = result.stdout.strip().removeprefix("run_id=")
+    run_dir = artifacts / "motivation" / run_id
+    source = run_dir / "traces/ms2.json"
+    before = source.read_bytes()
+    trace = json.loads(before)
+    meta = json.loads((run_dir / "metadata.json").read_bytes())
+    assert trace["protocol_version"] == meta["protocol_version"] == "ms2-v2"
+    assert trace["phase"] == "confirmatory"
+    starters = trace["starter_strategies"]
+    generated = [
+        item["body"] for item in MS2ControlledEndpoint.requests
+        if "Develop exactly one local, verifiable subgoal" in item["body"]["messages"][0]["content"]
+    ]
+    assert len(generated) == 3
+    assert all(
+        body["messages"][0]["content"].endswith(starters[candidate["starting_strategy"]])
+        for body, candidate in zip(generated, trace["samples"][0]["candidates"], strict=True)
+    )
+    assert {body["max_tokens"] for body in generated} == {5}
+    assert all(route_flow_status(c) == "checkpoint_review_pending"
+               for c in trace["samples"][0]["candidates"])
+    export = tmp_path / "blind-tasks"
+    derived = tmp_path / "derived.json"
+    verdicts = tmp_path / "verdicts.json"
+    base = ["ms2-answer-review"]
+    common = ["--run-dir", str(run_dir)]
+    assert main([*base, "export", *common, "--output", str(export)]) == 0
+    tasks = json.loads((export / "blind/answer-review.json").read_bytes())["tasks"]
+    assert len(tasks) == 3 and {task["kind"] for task in tasks} == {"checkpoint"}
+    assert all("route_id" not in task and "starting_strategy" not in task for task in tasks)
+    records = [
+        {"review_id": task["review_id"], "reviewer_id": "controlled", "rationale": "Test evidence",
+         "verdict": "no_final_answer"} for task in tasks
+    ]
+    import_call = [*base, "import", *common, "--bundle", str(export), "--reviews", str(verdicts)]
+    verdicts.write_text(json.dumps({"reviewer_kind": "codex", "reviews": records[:2]}), encoding="utf-8")
+    assert main([*import_call, "--output", str(derived)]) == 2
+    assert not derived.exists()
+    verdicts.write_text(json.dumps({"reviewer_kind": "codex", "reviews": records}), encoding="utf-8")
+    assert main([*import_call, "--output", str(derived)]) == 0
+    assert main([*import_call, "--output", str(source)]) == 2
+    assert source.read_bytes() == before
+    report = continuation_budget_report(run_dir, [2, 3, 9], reviewed_trace=derived)
+    assert report["cost"]["known_output_tokens"] == 18
+    assert report["observed_outcomes"] == {"correct": 6}
+    assert report["cutoffs"][0]["outcomes"] == {"censored_above_cutoff": 6}
+    assert report["cutoffs"][-1]["beyond_actual_call_cap"]
+    sent = len(MS2ControlledEndpoint.requests)
+    config.write_text(v2_config.replace("short = 5", "short = 4"), encoding="utf-8")
+    assert run_ms2("resume", config, manifest, answer_key, artifacts, run_id).returncode == 2
+    assert len(MS2ControlledEndpoint.requests) == sent
+
+
+def test_v2_rollout_distinguishes_budget_stop_from_unknown_and_execution_failure():
+    from ricl_experiment.analysis.ms2_budget import _outcome
+    from ricl_experiment.evaluation.answer import classify_answer
+    from ricl_experiment.motivation.ms2 import _v2_answer_text
+
+    text = r"Final answer: \(\frac12\)" + "\n" + r"Final answer: \frac{1}{2}"
+    assert classify_answer(_v2_answer_text(text), "0.5").status == "correct"
+    assert classify_answer(_v2_answer_text("#### Case 3: Try coordinates\nSet up x."), "18").extracted_answer is None
+    unresolved = {"status": "completed", "evaluation": {
+        "status": "blind_review", "reason": "non-empty output has no unambiguous extractable final answer",
+    }}
+    assert _outcome(unresolved, "length") == "incomplete_at_budget"
+    assert _outcome(unresolved, "stop") == "grading_unknown"
+    assert _outcome({"status": "failed"}, None) == "execution_failed"
+    assert _outcome({"status": "not_dispatched"}, None) == "not_dispatched"
+
+def test_budget_report_counts_failed_continuation_attempts(tmp_path):
+    from ricl_experiment.analysis.ms2_budget import continuation_budget_report
+
+    (tmp_path / "traces").mkdir()
+    (tmp_path / "config.json").write_text(
+        json.dumps({"ms2": {"continuation_max_tokens": 8}}), encoding="utf-8"
+    )
+    rollout = {
+        "logical_call_id": "one", "rollout_index": 0, "status": "failed",
+        "usage": [{"usage_status": "unknown", "reserved_output_tokens": 8}],
+    }
+    (tmp_path / "traces/ms2.json").write_text(json.dumps({
+        "run_id": "run", "phase": "pilot", "samples": [{"sample_id": "sample", "candidates": [
+            {"route_id": "route", "prefix_status": "available", "rollouts": [rollout]},
+        ]}],
+    }), encoding="utf-8")
+    with closing(sqlite3.connect(tmp_path / "run.sqlite3")) as db, db:
+        db.execute(
+            "CREATE TABLE attempts(logical_call_id TEXT, usage_status TEXT, input_tokens INTEGER, "
+            "output_tokens INTEGER, reasoning_tokens INTEGER, reserved_output_tokens INTEGER, status TEXT)"
+        )
+        db.execute("INSERT INTO attempts VALUES ('one', 'unknown', NULL, NULL, NULL, 8, 'unknown')")
+    report = continuation_budget_report(tmp_path, [4, 8])
+    assert report["observed_outcomes"] == {"execution_failed": 1}
+    assert report["cost"]["unknown_usage_output_reserve"] == 8
+    assert all(row["outcomes"] == {"execution_failed": 1} for row in report["cutoffs"])
+
+
+def test_partial_continuation_review_is_labeled(tmp_path, ms2_endpoint):
+    from ricl_experiment.evaluation.ms2_review import export_answer_review, import_answer_reviews
+
+    config, manifest, answer_key, artifacts = write_ms2_inputs(tmp_path, ms2_endpoint)
+    result = run_ms2("run", config, manifest, answer_key, artifacts)
+    assert result.returncode == 0, result.stderr
+    run_dir = artifacts / "motivation" / result.stdout.strip().removeprefix("run_id=")
+    frozen = run_dir / "traces/ms2.json"
+    trace = json.loads(frozen.read_bytes())
+    candidate = trace["samples"][0]["candidates"][0]
+    candidate["rollouts"][0]["evaluation"]["status"] = "blind_review"
+    frozen.write_text(json.dumps(trace), encoding="utf-8")
+    package = tmp_path / "package"
+    export_answer_review(run_dir, package)
+    reviews = tmp_path / "reviews.json"
+    reviews.write_text(json.dumps({"reviewer_kind": "codex", "reviews": []}), encoding="utf-8")
+    derived = tmp_path / "derived.json"
+    import_answer_reviews(run_dir, reviews, derived, bundle=package)
+    audit = json.loads(derived.read_bytes())["offline_review"]
+    assert audit["status"] == "partial"
+    assert audit["expected_count"] == 1
+    assert audit["imported_count"] == 0
+    assert len(audit["pending_review_ids"]) == 1
+    assert main([
+        "ms2-pilot-check", "--run-dir", str(run_dir), "--reviewed-trace", str(derived),
+        "--output", str(tmp_path / "gate.json"),
+    ]) == 2
+    assert not (tmp_path / "gate.json").exists()

@@ -180,7 +180,12 @@ def recompute_ms2_metrics(
                 "missing_reason": score.get("missing_reason", score.get("failure")),
             })
         candidates.sort(key=lambda row: row["candidate_id"])
-        complete = len(candidates) >= 2 and all(row["route_complete"] for row in candidates)
+        checkpoint_review_pending = any(
+            route_flow_status(candidate) == "checkpoint_review_pending" for candidate in sample["candidates"]
+        )
+        complete = not checkpoint_review_pending and len(candidates) >= 2 and all(
+            row["route_complete"] for row in candidates
+        )
         scored = complete and all(row["rater_score"] is not None and row["evidence_score"] is not None for row in candidates)
         outcomes = [row["y"] for row in candidates if row["y"] is not None]
         topics[sample_id] = {

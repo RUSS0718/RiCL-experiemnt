@@ -72,6 +72,8 @@ def normalize_answer(answer: str | None) -> str | None:
     if answer is None:
         return None
     value = answer.strip().strip("$").strip()
+    if value.startswith(r"\(") and value.endswith(r"\)"):
+        value = value[2:-2].strip()
     value = value.replace("\\left", "").replace("\\right", "")
     value = value.replace("\\cdot", "*").replace("\\times", "*")
     value = value.replace("\\pi", "pi").replace("\\infty", "oo")
@@ -240,6 +242,8 @@ def _explicit_answer_mentions(output: str | None) -> list[tuple[int, str]]:
     )
     for match in marker.finditer(output):
         answer = (match.group(1) or match.group(2)).strip()
+        if answer.startswith(r"\(") and answer.endswith(r"\)"):
+            answer = answer[2:-2].strip()
         if not answer or re.fullmatch(r"\\boxed\s*\{.*\}", answer):
             continue
         mentions.append((match.end(), answer))

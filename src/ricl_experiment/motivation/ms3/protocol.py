@@ -93,6 +93,7 @@ class DiagnosisReply:
     raw_response: Mapping[str, Any]
     usage: dict[str, int] | None
     elapsed_ms: int
+    http_status_code: int | None = None
 
 
 class DiagnosisRuntimeError(RuntimeError):
@@ -115,13 +116,15 @@ class DiagnosisAPIError(RuntimeError):
         usage: dict[str, int] | None = None,
         elapsed_ms: int | None = None,
         retryable: bool = True,
+        http_status_code: int | None = None,
     ):
-        """Retain bounded retry, usage, and raw-body details for the audit ledger."""
+        """Retain bounded retry, usage, status, and raw-body details for the audit ledger."""
         super().__init__(message)
         self.raw_response = raw_response
         self.usage = usage
         self.elapsed_ms = elapsed_ms
         self.retryable = retryable
+        self.http_status_code = http_status_code
 
 
 class DiagnosisTransport(Protocol):
@@ -142,9 +145,12 @@ class HttpxDiagnosisTransport:
         """Send one request and reject non-chat or non-success responses."""
         key = os.environ.get(self._config.model.api_key_env) if self._config.model.api_key_env else None
         headers = {"Authorization": f"Bearer {key}"} if key else {}
+        proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
         started = time.monotonic()
         try:
-            with httpx.Client(timeout=self._config.model.timeout_seconds, trust_env=False) as client:
+            with httpx.Client(
+                timeout=self._config.model.timeout_seconds, trust_env=False, proxy=proxy
+            ) as client:
                 response = client.post(
                     f"{self._config.model.base_url}/chat/completions",
                     json=request_body,
@@ -163,6 +169,7 @@ class HttpxDiagnosisTransport:
                 raw_response=response.content,
                 elapsed_ms=elapsed_ms,
                 retryable=response.status_code >= 500 or response.status_code == 429,
+                http_status_code=response.status_code,
             ) from error
         if not response.is_success:
             raise DiagnosisAPIError(
@@ -171,6 +178,7 @@ class HttpxDiagnosisTransport:
                 usage=_usage(payload.get("usage")) if isinstance(payload, dict) else None,
                 elapsed_ms=elapsed_ms,
                 retryable=response.status_code >= 500 or response.status_code == 429,
+                http_status_code=response.status_code,
             )
         if not _is_chat_completion(payload):
             raise DiagnosisAPIError(
@@ -185,6 +193,7 @@ class HttpxDiagnosisTransport:
             raw_response=payload,
             usage=_usage(payload.get("usage")),
             elapsed_ms=elapsed_ms,
+            http_status_code=response.status_code,
         )
 
 
@@ -302,7 +311,12 @@ def _usage(value: Any) -> dict[str, int] | None:
         for token in (input_tokens, output_tokens)
     ):
         return None
-    return {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    details = value.get("completion_tokens_details")
+    reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0:
+        usage["reasoning_tokens"] = reasoning
+    return usage
 
 
 def _steps(value: Any) -> list[str]:

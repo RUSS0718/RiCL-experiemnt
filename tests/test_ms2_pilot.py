@@ -233,6 +233,23 @@ def test_pilot_metrics_use_only_eligible_routes_and_read_live_scoring_artifacts(
     assert not second_topic["main_complete"]
 
 
+def test_pilot_report_reports_the_frozen_manifest_phase() -> None:
+    manifest = _manifest()
+    manifest["phase"] = "adjustment_validation"
+    trace, scoring = _trace_and_scoring()
+    trace["phase"] = "adjustment_validation"
+
+    report = build_pilot_report(manifest, trace, scoring=scoring)
+
+    assert report["phase"] == "adjustment_validation"
+    assert report["shape"]["status"] == "pass"
+    assert report["coverage"]["status"] == "pass"
+
+    trace["phase"] = "pilot"
+    mismatched = build_pilot_report(manifest, trace, scoring=scoring)
+    assert "trace_identity" in mismatched["coverage"]["failures"]
+
+
 def test_pilot_report_distinguishes_engineering_ready_from_external_blockers() -> None:
     manifest = _manifest()
     trace, scoring = _trace_and_scoring()
@@ -363,6 +380,7 @@ def test_controlled_local_runner_trace_is_consumable_without_real_readiness_clai
                     "temperature = 0",
                     "",
                     "[ms2]",
+                    'protocol_version = "legacy-v1"',
                     "initial_max_tokens = 8",
                     "continuation_max_tokens = 8",
                     "",

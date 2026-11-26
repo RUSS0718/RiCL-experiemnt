@@ -6,8 +6,10 @@ import json
 import os
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -15,7 +17,7 @@ from ..config import RunConfig, Sample, fingerprint
 from .ledger import Ledger
 
 ROLE_FIELD_ALLOWLIST: dict[str, tuple[str, ...]] = {
-    "generation": ("problem",),
+    "generation": ("problem", "instruction"),
     "continuation": ("problem", "checkpoint", "instruction"),
     "rater": ("problem", "candidates"),
     "diagnosis": ("problem", "steps"),
@@ -66,6 +68,8 @@ def build_request_body(
         raise ValueError("first_error_position must be a non-negative integer")
     if role == "generation":
         content = selected["problem"]
+        if "instruction" in selected:
+            content += f"\n\nInstruction:\n{selected['instruction']}"
     else:
         labels = {
             "problem": "Problem",
@@ -130,6 +134,8 @@ def dispatch_call(
     role: str,
     visible_fields: dict[str, Any],
     parameters: dict[str, Any] | None = None,
+    *,
+    redispatch_failed: bool = False,
 ) -> str:
     """Build and send one role-isolated request with stage-specific parameters."""
     model = config.model
@@ -150,6 +156,7 @@ def dispatch_call(
         sample_id,
         request_body,
         effective_parameters=effective_parameters,
+        redispatch_failed=redispatch_failed,
     )
 
 
@@ -162,6 +169,7 @@ def dispatch_request(
     request_body: dict[str, Any],
     *,
     effective_parameters: dict[str, Any] | None = None,
+    redispatch_failed: bool = False,
 ) -> str:
     """Send one isolated request through the shared audited transport."""
     model = config.model
@@ -176,7 +184,9 @@ def dispatch_request(
     if recovered is not None:
         return recovered
     if ledger.call_status(call_id) == "failed":
-        raise ModelDispatchError("logical call has a permanent failed attempt; start a new run")
+        if not redispatch_failed:
+            raise ModelDispatchError("logical call has a permanent failed attempt; start a new run")
+        ledger.authorize_redispatch(call_id, request_fingerprint)
     reservation = int(effective_parameters.get("max_tokens", 0))
     key = os.environ.get(model.api_key_env) if model.api_key_env else None
     headers = {"Authorization": f"Bearer {key}"} if key else {}
@@ -196,7 +206,10 @@ def dispatch_request(
             raise ModelDispatchError(str(error)) from error
         started = time.monotonic()
         try:
-            with httpx.Client(timeout=model.timeout_seconds, trust_env=False) as client:
+            proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+            with httpx.Client(
+                timeout=model.timeout_seconds, trust_env=False, proxy=proxy
+            ) as client:
                 response = client.post(endpoint, json=request_body, headers=headers)
             elapsed_ms = int((time.monotonic() - started) * 1000)
             response_ref = _save_response(run_dir, attempt_id, response.content)
@@ -261,6 +274,52 @@ def dispatch_request(
 
     raise ModelDispatchError(
         f"{last_error}; retry again with the same run_id if attempts remain"
+    )
+
+
+def normalize_openai_base_url(base_url: str) -> str:
+    """Normalize an OpenAI-compatible base URL so root relay URLs include /v1."""
+    trimmed = base_url.strip().rstrip("/")
+    parts = urlsplit(trimmed)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError("base_url must be an absolute HTTP(S) URL")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise ValueError("base_url must not contain credentials, query, or fragment")
+    path = parts.path.rstrip("/")
+    if not path:
+        path = "/v1"
+    return urlunsplit((parts.scheme, parts.netloc, path, "", "")).rstrip("/")
+
+
+def usage_drift_warnings(
+    output_tokens: int | None,
+    reasoning_tokens: int | None,
+    max_tokens: int | None = None,
+) -> list[str]:
+    """Return non-fatal warnings for proxy token-breakdown drift (e.g., 1-4 token overshoot)."""
+    warnings: list[str] = []
+    if output_tokens is not None and reasoning_tokens is not None and reasoning_tokens > output_tokens:
+        drift = reasoning_tokens - output_tokens
+        label = "usage_subtotal_minor_drift" if drift <= 16 else "usage_subtotal_drift"
+        warnings.append(
+            f"{label}: reasoning_tokens={reasoning_tokens} > completion_tokens={output_tokens} (delta=+{drift})"
+        )
+    if output_tokens is not None and max_tokens is not None and output_tokens > max_tokens:
+        drift = output_tokens - max_tokens
+        label = "output_tokens_minor_overshoot" if drift <= 16 else "output_tokens_exceeds_max_tokens"
+        warnings.append(
+            f"{label}: completion_tokens={output_tokens} > max_tokens={max_tokens} (delta=+{drift})"
+        )
+    return warnings
+
+
+def usage_out_of_bounds(attempt: Mapping[str, Any]) -> bool:
+    """Detect a reported completion count or reasoning subtotal beyond its bound."""
+    output = attempt["output_tokens"]
+    reasoning = attempt["reasoning_tokens"]
+    return output is not None and (
+        output > attempt["reserved_output_tokens"]
+        or (reasoning is not None and reasoning > output)
     )
 
 

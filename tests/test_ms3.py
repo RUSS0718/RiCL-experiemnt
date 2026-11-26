@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -69,6 +70,109 @@ def diagnosis_endpoint():
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def _diagnosis_reply():
+    from ricl_experiment.motivation.ms3.protocol import DiagnosisReply
+
+    content = json.dumps({"has_error": True, "first_error_step": 0})
+    raw = {
+        "choices": [{"message": {"role": "assistant", "content": content}}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+    }
+    return DiagnosisReply(content, raw, {"input_tokens": 11, "output_tokens": 7}, 1)
+
+
+def test_httpx_diagnosis_transport_honors_proxy_and_records_http_status(monkeypatch):
+    """Route live diagnosis requests through the explicit proxy and retain HTTP status."""
+
+    from ricl_experiment.motivation.ms3.protocol import HttpxDiagnosisTransport
+
+    observed = {}
+
+    class SuccessfulResponse:
+        status_code = 201
+        is_success = True
+        content = b"response"
+
+        @staticmethod
+        def json():
+            return {
+                "choices": [{"message": {"content": "{\"has_error\":false,\"first_error_step\":null}"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+            }
+
+    class RecordingClient:
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, *_args, **_kwargs):
+            return SuccessfulResponse()
+
+    config = RunConfig.model_validate(
+        {
+            "model": {
+                "base_url": "https://provider.example/v1",
+                "model": "fixture",
+                "capabilities": {"supported_parameters": ["max_tokens"], "required_parameters": ["max_tokens"]},
+                "parameters": {"max_tokens": 16},
+            },
+            "budget": {"max_attempts_per_call": 1, "max_reserved_output_tokens": 16},
+        }
+    )
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:33210")
+    monkeypatch.setattr("ricl_experiment.motivation.ms3.protocol.httpx.Client", RecordingClient)
+
+    reply = HttpxDiagnosisTransport(config).send({"model": "fixture", "messages": []})
+
+    assert observed["trust_env"] is False
+    assert observed["proxy"] == "http://127.0.0.1:33210"
+    assert reply.http_status_code == 201
+
+def test_run_diagnosis_records_provider_http_status(tmp_path: Path, diagnosis_endpoint: str):
+    """Keep 5xx status visible while leaving provider usage as observed or unknown."""
+    config = RunConfig.model_validate(
+        {
+            "model": {
+                "base_url": diagnosis_endpoint,
+                "model": "local-test-model",
+                "capabilities": {"supported_parameters": ["max_tokens"], "required_parameters": ["max_tokens"]},
+                "parameters": {"max_tokens": 64},
+            },
+            "budget": {"max_attempts_per_call": 1, "max_reserved_output_tokens": 512},
+        }
+    )
+    manifest = {
+        "study": "ms3",
+        "manifest_id": "http-status-fixture",
+        "fingerprint": "http-status-digest",
+        "samples": [
+            {
+                "sample_id": "s",
+                "source": "processbench",
+                "trajectory_id": "t",
+                "question_group_id": "q",
+                "problem": "Problem",
+                "steps": ["step one", "step two"],
+            }
+        ],
+    }
+    DiagnosisEndpoint.status_code = 524
+
+    run = run_diagnosis(config, manifest, tmp_path / "http-status-run")
+
+    assert run["status"] == "incomplete"
+    for method in METHODS:
+        result = run["methods"][method["id"]][0]
+        assert result["status"] == "api_failure"
+        assert result["http_status_code"] == 524
+        assert result["usage"]["status"] == "known"
 
 
 def test_parse_diagnosis_accepts_all_four_contract_states():
@@ -204,6 +308,71 @@ def test_run_diagnosis_pairs_three_blind_requests_and_saves_audit_artifacts(
     assert "reference_answer" not in saved_json
     assert "Solve 2 + 2." not in saved_json
     assert "Add 2 and 2." not in saved_json
+
+
+def test_diagnosis_resume_reuses_saved_calls_and_recovers_interrupted_attempt(tmp_path):
+    """A resumed diagnosis run reuses durable responses and retries only an interrupted call."""
+    config = RunConfig.model_validate(
+        {
+            "model": {
+                "base_url": "http://localhost/v1",
+                "model": "offline-test",
+                "capabilities": {"supported_parameters": ["max_tokens"], "required_parameters": ["max_tokens"]},
+                "parameters": {"max_tokens": 64},
+            },
+            "budget": {"max_attempts_per_call": 2, "max_reserved_output_tokens": 1024},
+        }
+    )
+    manifest = {
+        "study": "ms3",
+        "manifest_id": "resume-fixture",
+        "fingerprint": "resume-digest",
+        "samples": [
+            {
+                "sample_id": "sample-a",
+                "source": "processbench",
+                "trajectory_id": "trace-a",
+                "question_group_id": "question-a",
+                "problem": "Solve 2 + 2.",
+                "steps": ["Add 2 and 2.", "Return 4."],
+            }
+        ],
+    }
+    output = tmp_path / "diagnosis-resume"
+
+    class InterruptedTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def send(self, request_body):
+            self.calls += 1
+            if self.calls == 2:
+                raise KeyboardInterrupt("simulated process interruption")
+            return _diagnosis_reply()
+
+    first_transport = InterruptedTransport()
+    with pytest.raises(KeyboardInterrupt):
+        run_diagnosis(config, manifest, output, transport=first_transport)
+
+    class CountingTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def send(self, request_body):
+            self.calls += 1
+            return _diagnosis_reply()
+
+    resumed_transport = CountingTransport()
+    run = run_diagnosis(config, manifest, output, transport=resumed_transport, resume=True)
+
+    assert first_transport.calls == 2
+    assert resumed_transport.calls == 2
+    assert run["status"] == "completed"
+    assert all(len(rows) == 1 for rows in run["methods"].values())
+    with sqlite3.connect(output / "run.sqlite3") as db:
+        assert db.execute("SELECT COUNT(*) FROM logical_calls").fetchone()[0] == 3
+        assert db.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 4
+        assert db.execute("SELECT COUNT(*) FROM analysis_results").fetchone()[0] == 3
 
 
 def test_offline_analysis_matches_fixed_denominator_acceptance_example():

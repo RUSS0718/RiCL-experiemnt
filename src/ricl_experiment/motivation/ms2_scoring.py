@@ -21,6 +21,8 @@ from ..evaluation.evidence import (
 RATER_TEMPLATE_VERSION = "ms2-llm-rater-v1"
 EVIDENCE_TEMPLATE_VERSION = "ms2-evidence-extraction-v2"
 EVIDENCE_REVIEW_TEMPLATE_VERSION = "ms2-evidence-review-v1"
+JSON_EVIDENCE_TEMPLATE_VERSION = "ms2-evidence-extraction-json-v1"
+JSON_EVIDENCE_REVIEW_TEMPLATE_VERSION = "ms2-evidence-review-json-v1"
 _SENSITIVE_KEYS = {
     "reference_answer",
     "reference_solution",
@@ -91,15 +93,17 @@ def build_blinded_evidence_request(
     problem: str,
     checkpoint: str,
     parameters: Mapping[str, Any] | None = None,
+    *,
+    json_mode: bool = False,
 ) -> dict[str, Any]:
     """Build the exact request visible to the independent claim extractor."""
-    return _build_request(
+    request = _build_request(
         model,
         problem,
         checkpoint,
         (
             "Evidence instructions:\n"
-            "Return only JSON with a claims array. Each object must include assertion "
+            "Return only a json object, for example: {\"claims\": []}. Each claim must include assertion "
             "(a non-trivial mathematical claim visible in the checkpoint), conditions "
             "(array of strings), supporting_steps (array of strings), target_relation "
             "(string), and source_locator (an exact quote from the checkpoint). "
@@ -107,6 +111,9 @@ def build_blinded_evidence_request(
         ),
         parameters,
     )
+    if json_mode:
+        request["response_format"] = {"type": "json_object"}
+    return request
 
 
 def build_blinded_scoring_requests(
@@ -114,10 +121,14 @@ def build_blinded_scoring_requests(
     problem: str,
     checkpoint: str,
     parameters: Mapping[str, Any] | None = None,
+    *,
+    json_evidence: bool = False,
 ) -> dict[str, dict[str, Any]]:
     return {
         "llm_rater": build_blinded_rater_request(model, problem, checkpoint, parameters),
-        "evidence": build_blinded_evidence_request(model, problem, checkpoint, parameters),
+        "evidence": build_blinded_evidence_request(
+            model, problem, checkpoint, parameters, json_mode=json_evidence
+        ),
     }
 
 
@@ -234,13 +245,15 @@ def _build_evidence_review_request(
     checkpoint: str,
     claims: Sequence[Mapping[str, Any]],
     parameters: Mapping[str, Any],
+    *,
+    json_mode: bool = False,
 ) -> dict[str, Any]:
     fields = ("claim_id", "assertion", "conditions", "source_locator", "target_relation")
     assessment_input = [{key: claim[key] for key in fields} for claim in claims]
     instructions = (
         "Independent evidence review:\n"
         "Review each listed claim against the problem and visible checkpoint. "
-        "Return only JSON with a reviews array and one object per claim, containing "
+        "Return only a json object, for example: {\"reviews\": []}. Include one review object per claim, containing "
         "claim_id, verdict (verified, falsified, or unknown), "
         "source_locator (an exact nonempty quote from the checkpoint), "
         "conditions_sufficient (true or false), rationale (checkable mathematical steps "
@@ -251,11 +264,14 @@ def _build_evidence_review_request(
         "Use unknown when the claim or its conditions cannot be checked. "
         "Return JSON even when all claims are unknown.\n"
     )
-    return _build_request(
+    request = _build_request(
         model, problem, checkpoint,
         instructions + json.dumps(assessment_input, ensure_ascii=False),
         parameters,
     )
+    if json_mode:
+        request["response_format"] = {"type": "json_object"}
+    return request
 
 
 def _apply_evidence_review(
@@ -356,6 +372,7 @@ def freeze_scoring_artifact(
     verified_claims: Sequence[ClaimRecord | Mapping[str, Any]] = (),
     costs: Sequence[Mapping[str, Any]] = (),
     evidence_failure: str | None = None,
+    json_evidence: bool = False,
 ) -> dict[str, Any]:
     """Create the persisted pre-rollout score artifact with no future outcomes attached."""
     progress = score_verified_progress(
@@ -372,7 +389,7 @@ def freeze_scoring_artifact(
         "checkpoint": checkpoint,
         "templates": {
             "llm_rater": RATER_TEMPLATE_VERSION,
-            "evidence": EVIDENCE_TEMPLATE_VERSION,
+            "evidence": JSON_EVIDENCE_TEMPLATE_VERSION if json_evidence else EVIDENCE_TEMPLATE_VERSION,
         },
         "llm_rater": dict(llm_rater),
         "claim_extraction": dict(claim_extraction),
@@ -395,10 +412,14 @@ def score_ms2_checkpoint(
     checkpoint: str,
     verified_claims: Sequence[ClaimRecord | Mapping[str, Any]] = (),
     review_extracted_claims: bool = False,
+    json_evidence: bool = False,
+    redispatch_failed: bool = False,
 ) -> dict[str, Any]:
     """Run both scoring roles through the audited transport using only controlled visible input."""
     parameters = dict(config.model.parameters)
-    requests = build_blinded_scoring_requests(config.model.model, problem, checkpoint, parameters)
+    requests = build_blinded_scoring_requests(
+        config.model.model, problem, checkpoint, parameters, json_evidence=json_evidence
+    )
     calls = []
     parsed_rater = {"score": None, "rationale": "", "parse_status": "missing", "raw_response": ""}
     extraction = {"parse_status": "missing", "claims": [], "raw_response": ""}
@@ -412,6 +433,7 @@ def score_ms2_checkpoint(
         sample_id,
         requests["llm_rater"],
         effective_parameters=parameters,
+        redispatch_failed=redispatch_failed,
     )
     rater_payload = read_response(run_dir, rater_ref)
     parsed_rater = parse_llm_rater_response(_response_text(rater_payload))
@@ -434,6 +456,7 @@ def score_ms2_checkpoint(
         sample_id,
         requests["evidence"],
         effective_parameters=parameters,
+        redispatch_failed=redispatch_failed,
     )
     evidence_payload = read_response(run_dir, evidence_ref)
     extraction = parse_claim_extraction_response(
@@ -460,11 +483,13 @@ def score_ms2_checkpoint(
         elif extraction["claims"]:
             review_id = _logical_call_id(run_id, sample_id, route_id, "evidence-review")
             review_request = _build_evidence_review_request(
-                config.model.model, problem, checkpoint, extraction["claims"], parameters
+                config.model.model, problem, checkpoint, extraction["claims"], parameters,
+                json_mode=json_evidence,
             )
             review_ref = dispatch_request(
                 config, ledger, run_dir, review_id, sample_id, review_request,
                 effective_parameters=parameters,
+                redispatch_failed=redispatch_failed,
             )
             review_payload = read_response(run_dir, review_ref)
             verified_claims, evidence_failure = _apply_evidence_review(
@@ -488,9 +513,12 @@ def score_ms2_checkpoint(
         verified_claims=verified_claims,
         costs=calls,
         evidence_failure=evidence_failure,
+        json_evidence=json_evidence,
     )
     if review_extracted_claims:
-        artifact["templates"]["evidence_review"] = EVIDENCE_REVIEW_TEMPLATE_VERSION
+        artifact["templates"]["evidence_review"] = (
+            JSON_EVIDENCE_REVIEW_TEMPLATE_VERSION if json_evidence else EVIDENCE_REVIEW_TEMPLATE_VERSION
+        )
     artifact["artifact_ref"] = str(_artifact_path(run_dir, sample_id, route_id).relative_to(run_dir))
     _write_json(_artifact_path(run_dir, sample_id, route_id), artifact)
     return artifact

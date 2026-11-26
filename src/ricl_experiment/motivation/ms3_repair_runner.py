@@ -9,8 +9,9 @@ from typing import Any
 
 from ..config import RunConfig, fingerprint, validate_api_key
 from ..core.ledger import Ledger
-from ..core.model import ModelDispatchError, dispatch_request
+from ..core.model import ModelDispatchError, dispatch_request, usage_out_of_bounds
 from ..datasets.manifest import format_stratum, normalize_problem, problem_fingerprint
+from ..runner import _run_lock
 from .ms3_repair_protocol import (
     GROUPS,
     build_repair_request,
@@ -30,11 +31,13 @@ def run_ms3_repair(
     *,
     seed: int | None = None,
     max_new_tokens: int | None = None,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Dispatch four isolated repair calls per eligible local ProcessBench sample."""
     manifest = _read_json_object(manifest_path)
     audit = _read_json_object(audit_path)
-    answer_key = _index_rows(_read_json_value(answer_key_path), ("sample_id",))
+    answer_key_rows = _read_json_value(answer_key_path)
+    answer_key = _index_rows(answer_key_rows, ("sample_id",))
     snapshot = _read_json_object(snapshot_path)
     snapshot_records = snapshot.get("records")
     source_records = _index_source_records(snapshot_records)
@@ -69,136 +72,192 @@ def run_ms3_repair(
             "output-token budget cannot cover all four groups' configured attempt limits"
         )
 
+    requests = {}
+    for case in eligible:
+        positions = (None, None, case["g2_position"], case["first_error_position"])
+        for group, position in zip(GROUPS, positions, strict=True):
+            requests[case["sample_id"], group] = build_repair_request(
+                case["problem"], case["steps"], group, position, parameters, config.model.model,
+            )
+
     output_dir = Path(output_dir)
-    if output_dir.exists():
-        raise FileExistsError(f"output directory already exists: {output_dir}")
-    output_dir.mkdir(parents=True)
-    (output_dir / "blind").mkdir()
-    (output_dir / "restricted").mkdir()
-    _write_json(output_dir / "manifest.json", manifest)
-    _write_json(output_dir / "eligibility.json", exclusions)
-    _write_json(output_dir / "metadata.json", {
+    if not resume:
+        output_dir.mkdir(parents=True, exist_ok=False)
+    elif not output_dir.is_dir():
+        raise FileNotFoundError(f"MS3 repair run does not exist: {output_dir}")
+
+    metadata = {
         "schema_version": 1,
         "run_id": output_dir.name,
         "study": "ms3",
         "phase": manifest.get("phase"),
         "groups": list(GROUPS),
         "manifest_fingerprint": fingerprint(manifest),
-        "answer_key_fingerprint": fingerprint(_read_json_value(answer_key_path)),
+        "answer_key_fingerprint": fingerprint(answer_key_rows),
         "seed": selected_seed,
         "max_new_tokens": max_new_tokens,
         "effective_parameters": parameters,
         "model": config.model.model,
+        "endpoint": f"{config.model.base_url}/chat/completions",
         "tools": "disabled",
         "logical_calls_per_eligible_sample": len(GROUPS),
-        "status": "running",
-    })
-
-    assignments: list[dict[str, Any]] = []
-    blind_records: list[dict[str, Any]] = []
-    process_evidence: list[dict[str, Any]] = []
-    request_audit: list[dict[str, Any]] = []
-    run_status = "incomplete"
-    ledger = Ledger(output_dir / "run.sqlite3", config.budget.max_reserved_output_tokens)
-    try:
-        for case in eligible:
-            positions = {"G0": None, "G1": None, "G2": case["g2_position"], "G3": case["first_error_position"]}
-            for group in GROUPS:
-                request = build_repair_request(
-                    case["problem"],
-                    case["steps"],
-                    group,
-                    positions[group],
-                    parameters,
-                    config.model.model,
-                )
-                call_id = fingerprint({
-                    "run_id": output_dir.name,
-                    "sample_id": case["sample_id"],
-                    "group": group,
-                })
-                evaluation_id = fingerprint({"call_id": call_id, "role": "blind-evaluation"})
-                request_audit.append({
-                    "call_id": call_id,
-                    "group": group,
-                    "request": request,
-                })
-                _write_json(output_dir / "restricted" / "requests.json", request_audit)
-                assignment = {
-                    "evaluation_id": evaluation_id,
-                    "sample_id": case["sample_id"],
-                    "trajectory_id": case["trajectory_id"],
-                    "question_group_id": case["question_group_id"],
-                    "group": group,
-                    "call_id": call_id,
-                    "g2_candidate_indices": case["g2_candidate_indices"],
-                    "g2_position": case["g2_position"],
-                    "first_error_position": case["first_error_position"],
-                    "g3_position": case["first_error_position"],
-                    "position_offset": case["position_offset"],
-                    "trajectory_length": len(case["steps"]),
-                    "stratum": case["stratum"],
-                    "backbone": config.model.model,
-                    "effective_parameters": parameters,
-                    "max_new_tokens": max_new_tokens,
-                    "tools_enabled": False,
-                    "status": "pending",
-                    "response_ref": None,
+        "audit_fingerprint": fingerprint(audit),
+        "snapshot_fingerprint": fingerprint(snapshot),
+        "config_fingerprint": fingerprint(config.redacted()),
+        "requests_fingerprint": fingerprint(list(requests.values())),
+    }
+    with _run_lock(output_dir):
+        metadata_path = output_dir / "metadata.json"
+        ledger_path = output_dir / "run.sqlite3"
+        if resume:
+            if not metadata_path.is_file() or not ledger_path.is_file():
+                raise ValueError("MS3 repair run is missing its durable metadata or ledger")
+            previous = _read_json_object(metadata_path)
+            for field, value in metadata.items():
+                if previous.get(field) != value:
+                    raise ValueError(f"MS3 repair resume rejected: {field} changed")
+            if previous.get("status") == "completed":
+                return {
+                    "assignments": _read_json_value(output_dir / "restricted" / "assignments.json"),
+                    "evaluations": [
+                        json.loads(line)
+                        for line in (output_dir / "blind" / "evaluations.jsonl").read_text(
+                            encoding="utf-8"
+                        ).splitlines()
+                    ],
+                    "usage": previous["usage"],
+                    "status": "completed",
                 }
-                assignments.append(assignment)
-                process_evidence.append({
-                    "evaluation_id": evaluation_id,
-                    "first_error_position": case["first_error_position"],
-                    "first_error_step": case["steps"][case["first_error_position"]],
-                })
-                try:
-                    response_ref = dispatch_request(
-                        effective_config,
-                        ledger,
-                        output_dir,
-                        call_id,
-                        f"{case['sample_id']}:{group}",
-                        request,
-                    )
-                    candidate_output = _read_response(output_dir / response_ref)
-                    status = "completed" if candidate_output.strip() else "no_evaluable_output"
-                    missing_reason = None if candidate_output.strip() else "no_evaluable_output"
-                except ModelDispatchError as error:
-                    response_ref = None
-                    candidate_output = None
-                    status = ledger.call_status(call_id) or "failed"
-                    missing_reason = f"dispatch_{status}: {error}"
-                assignment.update({"status": status, "response_ref": response_ref})
-                assignment["attempts"] = _call_attempts(ledger, call_id)
-                blind_records.append({
-                    "evaluation_id": evaluation_id,
-                    "problem": case["problem"],
-                    "original_steps": case["steps"],
-                    "candidate_output": candidate_output,
-                    "reference_material": case["reference_material"],
-                    **evaluate_repair_record(
-                        evaluation_id,
-                        "missing",
-                        "missing",
-                        "missing",
-                        missing_reason=missing_reason or "pending_independent_review",
-                    ),
-                })
-                _write_json(output_dir / "restricted" / "assignments.json", assignments)
-                _write_jsonl(output_dir / "blind" / "evaluations.jsonl", blind_records)
-                _write_jsonl(output_dir / "restricted" / "first-error-evidence.jsonl", process_evidence)
-        run_status = "completed"
-    finally:
-        ledger.close_run(run_status)
-        costs = _token_costs(ledger)
-        ledger.close()
-    _write_json(output_dir / "restricted" / "requests.json", request_audit)
-    _write_json(output_dir / "metadata.json", {
-        **_read_json_object(output_dir / "metadata.json"),
-        "status": run_status,
-        "usage": costs,
-    })
-    return {"assignments": assignments, "evaluations": blind_records, "usage": costs}
+            if previous.get("dispatch_paused_reason") == "usage_out_of_bounds":
+                raise ValueError("MS3 repair route is paused for a usage discrepancy")
+        else:
+            (output_dir / "blind").mkdir()
+            (output_dir / "restricted").mkdir()
+            _write_json(output_dir / "manifest.json", manifest)
+            _write_json(output_dir / "eligibility.json", exclusions)
+        _write_json(metadata_path, {**metadata, "status": "running"})
+
+        assignments: list[dict[str, Any]] = []
+        blind_records: list[dict[str, Any]] = []
+        process_evidence: list[dict[str, Any]] = []
+        request_audit: list[dict[str, Any]] = []
+        run_status = "incomplete"
+        route_pause_reason = None
+        ledger = Ledger(ledger_path, config.budget.max_reserved_output_tokens)
+        try:
+            for case in eligible:
+                for group in GROUPS:
+                    request = requests[case["sample_id"], group]
+                    call_id = fingerprint({
+                        "run_id": output_dir.name,
+                        "sample_id": case["sample_id"],
+                        "group": group,
+                    })
+                    evaluation_id = fingerprint({"call_id": call_id, "role": "blind-evaluation"})
+                    request_audit.append({
+                        "call_id": call_id,
+                        "group": group,
+                        "request": request,
+                    })
+                    _write_json(output_dir / "restricted" / "requests.json", request_audit)
+                    assignment = {
+                        "evaluation_id": evaluation_id,
+                        "sample_id": case["sample_id"],
+                        "trajectory_id": case["trajectory_id"],
+                        "question_group_id": case["question_group_id"],
+                        "group": group,
+                        "call_id": call_id,
+                        "g2_candidate_indices": case["g2_candidate_indices"],
+                        "g2_position": case["g2_position"],
+                        "first_error_position": case["first_error_position"],
+                        "g3_position": case["first_error_position"],
+                        "position_offset": case["position_offset"],
+                        "trajectory_length": len(case["steps"]),
+                        "stratum": case["stratum"],
+                        "backbone": config.model.model,
+                        "effective_parameters": parameters,
+                        "max_new_tokens": max_new_tokens,
+                        "tools_enabled": False,
+                        "status": "pending",
+                        "response_ref": None,
+                    }
+                    assignments.append(assignment)
+                    process_evidence.append({
+                        "evaluation_id": evaluation_id,
+                        "first_error_position": case["first_error_position"],
+                        "first_error_step": case["steps"][case["first_error_position"]],
+                    })
+                    try:
+                        response_ref = dispatch_request(
+                            effective_config,
+                            ledger,
+                            output_dir,
+                            call_id,
+                            f"{case['sample_id']}:{group}",
+                            request,
+                        )
+                        candidate_output = _read_response(output_dir / response_ref)
+                        status = "completed" if candidate_output.strip() else "no_evaluable_output"
+                        missing_reason = None if candidate_output.strip() else "no_evaluable_output"
+                    except ModelDispatchError as error:
+                        response_ref = None
+                        candidate_output = None
+                        status = ledger.call_status(call_id) or "failed"
+                        missing_reason = f"dispatch_{status}: {error}"
+                        route_pause_reason = status
+                    assignment.update({"status": status, "response_ref": response_ref})
+                    assignment["attempts"] = _call_attempts(ledger, call_id)
+                    if any(usage_out_of_bounds(attempt) for attempt in assignment["attempts"]):
+                        candidate_output = None
+                        assignment["status"] = "usage_out_of_bounds"
+                        missing_reason = "usage_out_of_bounds"
+                        route_pause_reason = "usage_out_of_bounds"
+                    blind_records.append({
+                        "evaluation_id": evaluation_id,
+                        "problem": case["problem"],
+                        "original_steps": case["steps"],
+                        "candidate_output": candidate_output,
+                        "reference_material": case["reference_material"],
+                        **evaluate_repair_record(
+                            evaluation_id,
+                            "missing",
+                            "missing",
+                            "missing",
+                            missing_reason=missing_reason or "pending_independent_review",
+                        ),
+                    })
+                    _write_json(output_dir / "restricted" / "assignments.json", assignments)
+                    _write_jsonl(output_dir / "blind" / "evaluations.jsonl", blind_records)
+                    _write_jsonl(output_dir / "restricted" / "first-error-evidence.jsonl", process_evidence)
+                    if route_pause_reason is not None:
+                        break
+                if route_pause_reason is not None:
+                    break
+            metadata.update({
+                "planned_logical_calls": len(requests),
+                "dispatched_logical_calls": len(assignments),
+                "not_dispatched_logical_calls": len(requests) - len(assignments),
+            })
+            if route_pause_reason is not None:
+                metadata["dispatch_paused_reason"] = route_pause_reason
+            if route_pause_reason is None and all(
+                row["response_ref"] is not None for row in assignments
+            ):
+                run_status = "completed"
+        finally:
+            try:
+                ledger.close_run(run_status)
+                costs = _token_costs(ledger)
+                _write_json(metadata_path, {**metadata, "status": run_status, "usage": costs})
+            finally:
+                ledger.close()
+        _write_json(output_dir / "restricted" / "requests.json", request_audit)
+        return {
+            "assignments": assignments,
+            "evaluations": blind_records,
+            "usage": costs,
+            "status": run_status,
+        }
 
 
 def _eligible_cases(

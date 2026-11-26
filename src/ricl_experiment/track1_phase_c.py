@@ -18,6 +18,7 @@ from typing import Any
 from .track1 import (
     evaluate_curves,
     evaluate_output,
+    format_boxed_answer,
     load_problem_split,
     load_unified_runs,
     majority_vote_answers,
@@ -59,7 +60,7 @@ def _classify_run(run_data: Mapping[str, Any], ref_answer: str) -> tuple[str, st
             "technical_truncation" if stop_reason in {"token_limit", "empty_content_at_output_limit"} else "no_evaluable_output",
             None,
         )
-    ev = evaluate_output(f"\\boxed{{{final_ans}}}", ref_answer)
+    ev = evaluate_output(format_boxed_answer(final_ans), ref_answer)
     bucket = "math_wrong" if ev["status"] == "incorrect" else (
         "math_correct" if ev["status"] == "correct" else ev["status"]
     )
@@ -473,7 +474,7 @@ def run_b1_sc_runtime(
                     tmp_prob.unlink()
         data = json.loads(run_file.read_text(encoding="utf-8")) if run_file.is_file() else {}
         ans = data.get("final_answer")
-        ev = evaluate_output(f"\\boxed{{{ans}}}", prob.reference_answer) if isinstance(ans, str) and ans.strip() else {"status": "no_evaluable_output", "extracted_answer": None}
+        ev = evaluate_output(format_boxed_answer(ans), prob.reference_answer) if isinstance(ans, str) and ans.strip() else {"status": "no_evaluable_output", "extracted_answer": None}
         return {
             "problem_id": prob.problem_id,
             "rollout_index": r_idx,
@@ -521,12 +522,12 @@ def run_b1_sc_runtime(
                     "step": item["rollout_index"],
                     "total_tokens": cum_tokens,
                     "final_answer": winner,
-                    "independent_eval_ready_text": f"\\boxed{{{winner}}}" if winner else None,
+                    "independent_eval_ready_text": format_boxed_answer(winner) if winner else None,
                     "rollout_extracted_answer": item["extracted_answer"],
                 }
             )
         final_winner = checkpoints[-1]["final_answer"] if checkpoints else None
-        if final_winner and evaluate_output(f"\\boxed{{{final_winner}}}", prob.reference_answer)["status"] == "correct":
+        if final_winner and evaluate_output(format_boxed_answer(final_winner), prob.reference_answer)["status"] == "correct":
             maj_ok += 1
         unified_rows.append(
             {
@@ -538,7 +539,7 @@ def run_b1_sc_runtime(
                 "api_calls": len(seq),
                 "wall_time_s": round(cum_wall, 3),
                 "final_answer": final_winner,
-                "independent_eval_ready_text": f"\\boxed{{{final_winner}}}" if final_winner else None,
+                "independent_eval_ready_text": format_boxed_answer(final_winner) if final_winner else None,
                 "actions": ["sample"] * len(seq),
                 "lemma_stats": {"extracted_count": 0, "l1_verified_count": 0, "pruned_count": 0, "salvaged_reused_count": 0},
                 "warnings": warnings_all,

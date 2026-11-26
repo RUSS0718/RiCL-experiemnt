@@ -81,7 +81,7 @@ def run_phase_c(
     max_tokens: int = 8192,
     reasoning_effort: str = "none",
     token_caps: Sequence[int] | None = None,
-    max_requests: int = 750,
+    max_requests: int | None = None,
     max_estimated_usd: Decimal = Decimal("5.50"),
     max_workers: int = 4,
     resume: bool = True,
@@ -123,6 +123,9 @@ def run_phase_c(
     queue: list[tuple[str, str]] = [
         (pid, cond) for cond in conditions for pid in selected_ids
     ]
+    effective_max_requests = (
+        max_requests if max_requests is not None else len(queue) * request_limit
+    )
 
     lock = threading.Lock()
     requests_used = 0
@@ -203,9 +206,9 @@ def run_phase_c(
     def _run_one(pid: str, cond: str) -> None:
         nonlocal requests_used, usd_used
         with lock:
-            if requests_used >= max_requests or usd_used >= max_estimated_usd:
+            if requests_used + request_limit > effective_max_requests or usd_used >= max_estimated_usd:
                 return
-            per_run_req = min(request_limit, max_requests - requests_used)
+            per_run_req = request_limit
             requests_used += per_run_req  # Reserve worst-case; reconcile after completion
 
         run_dir = runs_root / cond / pid
@@ -351,6 +354,7 @@ def run_phase_c(
         "token_limit": token_limit,
         "token_caps": effective_caps,
         "request_limit": request_limit,
+        "max_requests": effective_max_requests,
         "cost_limit_usd": cost_limit_usd,
         "n_problems": len(selected_ids),
         "conditions": list(conditions),

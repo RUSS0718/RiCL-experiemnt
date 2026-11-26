@@ -179,7 +179,12 @@ def main() -> int:
     pc.add_argument("--cost-limit-usd", type=str, default="0.25")
     pc.add_argument("--max-tokens", type=int, default=8192)
     pc.add_argument("--reasoning-effort", type=str, default="none")
-    pc.add_argument("--max-requests", type=int, default=750)
+    pc.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Total request ceiling; defaults to planned_runs * request_limit",
+    )
     pc.add_argument("--max-estimated-usd", type=Decimal, default=Decimal("5.50"))
     pc.add_argument("--max-workers", type=int, default=4)
     pc.add_argument("--no-resume", action="store_true")

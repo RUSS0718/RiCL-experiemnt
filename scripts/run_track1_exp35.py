@@ -170,6 +170,8 @@ def main() -> int:
         default=Path("artifacts/track1-exp35/b1-v2/unified_b1.jsonl"),
     )
     pc.add_argument("--output-dir", type=Path, default=Path("artifacts/track1-exp35/phase-c"))
+    pc.add_argument("--base-url", type=str, default=None, help="Defaults to User/process BASE_URL")
+    pc.add_argument("--model", type=str, default=None, help="Defaults to User/process MODEL")
     pc.add_argument("--conditions", nargs="+", default=list(PHASE_C_CONDITIONS))
     pc.add_argument("--problem-ids", nargs="+", default=None)
     pc.add_argument("--token-limit", type=int, default=32768)
@@ -317,6 +319,8 @@ def main() -> int:
             args.devset_dir,
             args.b1_sc_unified,
             args.output_dir,
+            base_url=args.base_url,
+            model=args.model,
             conditions=args.conditions,
             problem_ids=args.problem_ids,
             token_limit=args.token_limit,

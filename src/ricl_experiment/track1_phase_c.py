@@ -27,21 +27,21 @@ PHASE_C_CONDITIONS: tuple[str, ...] = ("B1", "B2", "B3", "B4", "RiCL_v0.2")
 PHASE_C_TOKEN_CAPS: tuple[int, ...] = (2048, 4096, 8192, 12288, 16384, 24576, 32768)
 
 
-def _read_user_api_key() -> str:
-    """Read fresh User-level API_KEY on Windows, falling back to process env without logging."""
+def _read_user_env(name: str, *, required: bool = True) -> str:
+    """Read fresh User-level env var on Windows, falling back to process env without logging."""
     if sys.platform == "win32":
         try:
             import winreg
 
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as reg_key:
-                val, _ = winreg.QueryValueEx(reg_key, "API_KEY")
+                val, _ = winreg.QueryValueEx(reg_key, name)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
         except OSError:
             pass
-    val = os.environ.get("API_KEY", "").strip()
-    if not val:
-        raise RuntimeError("User or process API_KEY environment variable is not set")
+    val = os.environ.get(name, "").strip()
+    if required and not val:
+        raise RuntimeError(f"User or process {name} environment variable is not set")
     return val
 
 
@@ -71,6 +71,8 @@ def run_phase_c(
     b1_sc_unified_path: Path | None,
     output_dir: Path,
     *,
+    base_url: str | None = None,
+    model: str | None = None,
     conditions: Sequence[str] = PHASE_C_CONDITIONS,
     problem_ids: Sequence[str] | None = None,
     token_limit: int = 32768,
@@ -78,6 +80,7 @@ def run_phase_c(
     cost_limit_usd: str = "0.25",
     max_tokens: int = 8192,
     reasoning_effort: str = "none",
+    token_caps: Sequence[int] | None = None,
     max_requests: int = 750,
     max_estimated_usd: Decimal = Decimal("5.50"),
     max_workers: int = 4,
@@ -91,14 +94,19 @@ def run_phase_c(
         ["git", "-C", str(runtime_dir), "rev-parse", "HEAD"], text=True
     ).strip()
 
-    api_key = _read_user_api_key()
+    runtime_py = runtime_dir / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    python_exe = str(runtime_py) if runtime_py.is_file() else sys.executable
+
+    resolved_base_url = (base_url or _read_user_env("BASE_URL")).strip()
+    resolved_model = (model or _read_user_env("MODEL")).strip()
+    api_key = _read_user_env("API_KEY")
     base_env = dict(os.environ)
     existing_pp = base_env.get("PYTHONPATH", "")
     base_env["PYTHONPATH"] = (
         f"{runtime_dir}{os.pathsep}{existing_pp}" if existing_pp else str(runtime_dir)
     )
-    base_env["BASE_URL"] = "https://api.deepseek.com"
-    base_env["MODEL"] = "deepseek-flash"
+    base_env["BASE_URL"] = resolved_base_url
+    base_env["MODEL"] = resolved_model
     base_env["API_KEY"] = api_key
 
     all_problems = {p.problem_id: p for p in load_problem_split(devset_dir)}
@@ -214,7 +222,7 @@ def run_phase_c(
         try:
             proc = subprocess.run(
                 [
-                    sys.executable,
+                    python_exe,
                     "-m",
                     "ricl_runtime.track1_cli",
                     "--problem-file",
@@ -295,10 +303,15 @@ def run_phase_c(
             rec_copy["condition"] = "B1-SC"
             unified_records.append(rec_copy)
 
+    effective_caps = (
+        list(token_caps)
+        if token_caps is not None
+        else (list(PHASE_C_TOKEN_CAPS) + ([token_limit] if token_limit > PHASE_C_TOKEN_CAPS[-1] else []))
+    )
     curves_report = evaluate_curves(
         unified_records,
         eval_ak_path,
-        token_caps=list(PHASE_C_TOKEN_CAPS),
+        token_caps=effective_caps,
     )
     plot_paths = write_curves_and_plot(curves_report, eval_dir)
 
@@ -331,11 +344,12 @@ def run_phase_c(
         "created_at_utc": datetime.now(UTC).isoformat(),
         "runtime_dir": str(runtime_dir),
         "runtime_revision": rev,
-        "endpoint": "https://api.deepseek.com",
-        "model": "deepseek-flash",
+        "endpoint": resolved_base_url,
+        "model": resolved_model,
         "reasoning_effort": reasoning_effort,
         "max_tokens": max_tokens,
         "token_limit": token_limit,
+        "token_caps": effective_caps,
         "request_limit": request_limit,
         "cost_limit_usd": cost_limit_usd,
         "n_problems": len(selected_ids),

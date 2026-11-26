@@ -25,6 +25,7 @@ from ricl_experiment.track1_phase_a import (
 )
 from ricl_experiment.track1_phase_c import (
     PHASE_C_CONDITIONS,
+    run_b1_sc_runtime,
     run_phase_c,
 )
 
@@ -170,6 +171,8 @@ def main() -> int:
         default=Path("artifacts/track1-exp35/b1-v2/unified_b1.jsonl"),
     )
     pc.add_argument("--output-dir", type=Path, default=Path("artifacts/track1-exp35/phase-c"))
+    pc.add_argument("--base-url", type=str, default=None, help="Defaults to User/process BASE_URL")
+    pc.add_argument("--model", type=str, default=None, help="Defaults to User/process MODEL")
     pc.add_argument("--conditions", nargs="+", default=list(PHASE_C_CONDITIONS))
     pc.add_argument("--problem-ids", nargs="+", default=None)
     pc.add_argument("--token-limit", type=int, default=32768)
@@ -177,10 +180,29 @@ def main() -> int:
     pc.add_argument("--cost-limit-usd", type=str, default="0.25")
     pc.add_argument("--max-tokens", type=int, default=8192)
     pc.add_argument("--reasoning-effort", type=str, default="none")
-    pc.add_argument("--max-requests", type=int, default=750)
+    pc.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Total request ceiling; defaults to planned_runs * request_limit",
+    )
     pc.add_argument("--max-estimated-usd", type=Decimal, default=Decimal("5.50"))
     pc.add_argument("--max-workers", type=int, default=4)
     pc.add_argument("--no-resume", action="store_true")
+
+    b1sc = sub.add_parser("phase-c-b1sc", help="Run same-model B1-SC (N=3 no-critic) via track1_cli")
+    b1sc.add_argument("--runtime-dir", type=Path, default=DEFAULT_RUNTIME_DIR)
+    b1sc.add_argument("--devset-dir", type=Path, default=Path("data/track1-dev30-v2"))
+    b1sc.add_argument("--output-dir", type=Path, default=Path("artifacts/track1-exp35/phase-c-b1sc"))
+    b1sc.add_argument("--base-url", type=str, default=None)
+    b1sc.add_argument("--model", type=str, default=None)
+    b1sc.add_argument("--n-rollouts", type=int, default=3)
+    b1sc.add_argument("--max-tokens", type=int, default=16384)
+    b1sc.add_argument("--reasoning-effort", type=str, default="low")
+    b1sc.add_argument("--token-limit", type=int, default=49152)
+    b1sc.add_argument("--cost-limit-usd", type=str, default="0.25")
+    b1sc.add_argument("--max-workers", type=int, default=4)
+    b1sc.add_argument("--no-resume", action="store_true")
 
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
@@ -317,6 +339,8 @@ def main() -> int:
             args.devset_dir,
             args.b1_sc_unified,
             args.output_dir,
+            base_url=args.base_url,
+            model=args.model,
             conditions=args.conditions,
             problem_ids=args.problem_ids,
             token_limit=args.token_limit,
@@ -326,6 +350,24 @@ def main() -> int:
             reasoning_effort=args.reasoning_effort,
             max_requests=args.max_requests,
             max_estimated_usd=args.max_estimated_usd,
+            max_workers=args.max_workers,
+            resume=not args.no_resume,
+        )
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.stage == "phase-c-b1sc":
+        summary = run_b1_sc_runtime(
+            args.runtime_dir,
+            args.devset_dir,
+            args.output_dir,
+            base_url=args.base_url,
+            model=args.model,
+            n_rollouts=args.n_rollouts,
+            max_tokens=args.max_tokens,
+            reasoning_effort=args.reasoning_effort,
+            token_limit=args.token_limit,
+            cost_limit_usd=args.cost_limit_usd,
             max_workers=args.max_workers,
             resume=not args.no_resume,
         )

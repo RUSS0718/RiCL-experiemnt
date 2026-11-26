@@ -20,6 +20,7 @@ from .track1 import (
     evaluate_output,
     load_problem_split,
     load_unified_runs,
+    majority_vote_answers,
     write_curves_and_plot,
 )
 
@@ -368,6 +369,211 @@ def run_phase_c(
         "by_condition": by_condition,
         "eval_conditions": curves_report["conditions"],
         "eval_outputs": {k: str(v) for k, v in plot_paths.items()},
+    }
+    (output_dir / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return summary
+
+
+def run_b1_sc_runtime(
+    runtime_dir: Path,
+    devset_dir: Path,
+    output_dir: Path,
+    *,
+    base_url: str | None = None,
+    model: str | None = None,
+    n_rollouts: int = 3,
+    max_tokens: int = 16384,
+    reasoning_effort: str = "low",
+    token_limit: int = 49152,
+    cost_limit_usd: str = "0.25",
+    max_workers: int = 4,
+    resume: bool = True,
+) -> dict[str, Any]:
+    """Run N independent --screen B1 rollouts via track1_cli and aggregate majority-vote checkpoints."""
+    runtime_dir = runtime_dir.resolve()
+    devset_dir = devset_dir.resolve()
+    output_dir = output_dir.resolve()
+    rev = subprocess.check_output(
+        ["git", "-C", str(runtime_dir), "rev-parse", "HEAD"], text=True
+    ).strip()
+
+    runtime_py = runtime_dir / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    python_exe = str(runtime_py) if runtime_py.is_file() else sys.executable
+
+    resolved_base_url = (base_url or _read_user_env("BASE_URL")).strip()
+    resolved_model = (model or _read_user_env("MODEL")).strip()
+    api_key = _read_user_env("API_KEY")
+    base_env = dict(os.environ)
+    existing_pp = base_env.get("PYTHONPATH", "")
+    base_env["PYTHONPATH"] = (
+        f"{runtime_dir}{os.pathsep}{existing_pp}" if existing_pp else str(runtime_dir)
+    )
+    base_env["BASE_URL"] = resolved_base_url
+    base_env["MODEL"] = resolved_model
+    base_env["API_KEY"] = api_key
+
+    problems = load_problem_split(devset_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    runs_root = output_dir / "runs"
+    runs_root.mkdir(parents=True, exist_ok=True)
+
+    tasks: list[tuple[Any, int]] = [
+        (prob, r_idx) for prob in problems for r_idx in range(1, n_rollouts + 1)
+    ]
+
+    def _run_rollout(prob: Any, r_idx: int) -> dict[str, Any]:
+        run_dir = runs_root / prob.problem_id / f"r{r_idx}"
+        run_file = run_dir / "run.json"
+        if not (resume and run_file.is_file()):
+            if run_dir.exists():
+                for child in run_dir.iterdir():
+                    child.unlink()
+                run_dir.rmdir()
+            run_dir.parent.mkdir(parents=True, exist_ok=True)
+            tmp_prob = output_dir / f"_tmp_b1sc_{prob.problem_id}_r{r_idx}.txt"
+            tmp_prob.write_text(prob.problem, encoding="utf-8")
+            try:
+                subprocess.run(
+                    [
+                        python_exe,
+                        "-m",
+                        "ricl_runtime.track1_cli",
+                        "--problem-file",
+                        str(tmp_prob),
+                        "--problem-id",
+                        prob.problem_id,
+                        "--condition",
+                        "B1",
+                        "--screen",
+                        "--source-revision",
+                        rev,
+                        "--output-dir",
+                        str(run_dir),
+                        "--token-limit",
+                        str(token_limit),
+                        "--request-limit",
+                        "1",
+                        "--cost-limit-usd",
+                        str(cost_limit_usd),
+                        "--max-tokens",
+                        str(max_tokens),
+                        "--reasoning-effort",
+                        reasoning_effort,
+                    ],
+                    cwd=str(runtime_dir),
+                    env=base_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                if tmp_prob.exists():
+                    tmp_prob.unlink()
+        data = json.loads(run_file.read_text(encoding="utf-8")) if run_file.is_file() else {}
+        ans = data.get("final_answer")
+        ev = evaluate_output(f"\\boxed{{{ans}}}", prob.reference_answer) if isinstance(ans, str) and ans.strip() else {"status": "no_evaluable_output", "extracted_answer": None}
+        return {
+            "problem_id": prob.problem_id,
+            "rollout_index": r_idx,
+            "status": data.get("status", "failed"),
+            "stop_reason": data.get("stop_reason", "missing_run_json"),
+            "total_tokens": int(data.get("known_total_tokens") or 0),
+            "wall_time_s": float(data.get("wall_time_s") or 0.0),
+            "estimated_usd": str(data.get("estimated_or_reserved_usd") or "0"),
+            "final_answer": ans,
+            "extracted_answer": ev["extracted_answer"],
+            "correct": ev["status"] == "correct",
+            "warnings": list(data.get("warnings") or []),
+        }
+
+    rollout_map: dict[tuple[str, int], dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+        futs = {pool.submit(_run_rollout, prob, r_idx): (prob.problem_id, r_idx) for prob, r_idx in tasks}
+        for fut in as_completed(futs):
+            row = fut.result()
+            rollout_map[(row["problem_id"], row["rollout_index"])] = row
+
+    unified_rows: list[dict[str, Any]] = []
+    pass1_ok = maj_ok = oracle_ok = trunc_cnt = err_cnt = 0
+    for prob in problems:
+        seq = [rollout_map[(prob.problem_id, r_idx)] for r_idx in range(1, n_rollouts + 1)]
+        if seq[0]["correct"]:
+            pass1_ok += 1
+        if any(item["correct"] for item in seq):
+            oracle_ok += 1
+        trunc_cnt += sum(1 for item in seq if item["final_answer"] is None)
+        err_cnt += sum(1 for item in seq if item["status"] == "failed")
+        cum_tokens = 0
+        cum_wall = 0.0
+        voted: list[str | None] = []
+        warnings_all: list[str] = []
+        checkpoints: list[dict[str, Any]] = []
+        for item in seq:
+            cum_tokens += item["total_tokens"]
+            cum_wall += item["wall_time_s"]
+            voted.append(item["extracted_answer"] or item["final_answer"])
+            warnings_all.extend(item["warnings"])
+            winner = majority_vote_answers(voted)
+            checkpoints.append(
+                {
+                    "step": item["rollout_index"],
+                    "total_tokens": cum_tokens,
+                    "final_answer": winner,
+                    "independent_eval_ready_text": f"\\boxed{{{winner}}}" if winner else None,
+                    "rollout_extracted_answer": item["extracted_answer"],
+                }
+            )
+        final_winner = checkpoints[-1]["final_answer"] if checkpoints else None
+        if final_winner and evaluate_output(f"\\boxed{{{final_winner}}}", prob.reference_answer)["status"] == "correct":
+            maj_ok += 1
+        unified_rows.append(
+            {
+                "schema_version": "track1-unified-v0.2",
+                "condition": "B1",
+                "problem_id": prob.problem_id,
+                "source": prob.source,
+                "total_tokens": cum_tokens,
+                "api_calls": len(seq),
+                "wall_time_s": round(cum_wall, 3),
+                "final_answer": final_winner,
+                "independent_eval_ready_text": f"\\boxed{{{final_winner}}}" if final_winner else None,
+                "actions": ["sample"] * len(seq),
+                "lemma_stats": {"extracted_count": 0, "l1_verified_count": 0, "pruned_count": 0, "salvaged_reused_count": 0},
+                "warnings": warnings_all,
+                "checkpoints": checkpoints,
+            }
+        )
+
+    unified_path = output_dir / "unified_b1_sc.jsonl"
+    with unified_path.open("w", encoding="utf-8") as fh:
+        for row in unified_rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    n_probs = max(1, len(problems))
+    total_tokens = sum(r["total_tokens"] for r in rollout_map.values())
+    total_usd = sum((Decimal(r["estimated_usd"]) for r in rollout_map.values()), Decimal("0"))
+    summary = {
+        "stage": "phase_c_b1sc",
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "endpoint": resolved_base_url,
+        "model": resolved_model,
+        "reasoning_effort": reasoning_effort,
+        "max_tokens": max_tokens,
+        "n_problems": len(problems),
+        "n_rollouts": n_rollouts,
+        "pass_at_1": pass1_ok / n_probs,
+        "maj_at_n": maj_ok / n_probs,
+        "oracle_pass_at_n": oracle_ok / n_probs,
+        "pass1_correct": pass1_ok,
+        "maj_correct": maj_ok,
+        "oracle_correct": oracle_ok,
+        "missing_answer_rollouts": trunc_cnt,
+        "failed_rollouts": err_cnt,
+        "total_tokens": total_tokens,
+        "total_estimated_usd": str(total_usd),
+        "unified_b1_sc": str(unified_path),
     }
     (output_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

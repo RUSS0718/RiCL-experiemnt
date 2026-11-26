@@ -2,9 +2,9 @@
 
 2026-11-25（北京时间） · [研究入口 #28](https://github.com/RUSS0718/RiCL-experiemnt/issues/28) · [集成 PR #27](https://github.com/RUSS0718/RiCL-experiemnt/pull/27)
 
-**快照说明。** 首批结果表及此前段落保留 2026-11-25 首次收口时可核实的状态；2026-11-26 续跑附录是后续更新，状态以附录为准。
+**快照说明。** 首批结果表、前置段落及较早续跑附录均保留各自收口时可核实的状态；本报告末尾的 2026-11-26 在线续跑附录是最新状态，历史快照不回写。
 
-**阶段收口，不是整项研究通过。** 首批 MS2-A 可支持样本内的评分局限；MS2-B 提供历史终答关联的方向性证据。MS3-A 首批覆盖不足，不能比较三方法。新的独立 MS3-A 校准、MS3-B 四臂与可选 MS2-B 均未派发，不存在新配置效应估计。另有一条更早的 MS3-A 启动记录无逐请求账本，实际发送和费用未知；不把它记为零或释放预算。旧 Pilot 的失败保留，不启动 Main Experiment。
+**阶段收口。** 首批 MS2-A 支持样本内的评分局限，MS2-B 提供历史终答关联的方向性证据。MS3-A 首批覆盖不足，旧窗口的未知请求占用新校准分项额度。11 月 26 日窗口实际发送 76 次，其中 MS3-B 四臂 64 次，MS2-B 独立前缀评分 12 次。两批新数据均低于报告主要效应所需的配对门槛。原 Pilot 失败记录保留，Main Experiment 未启动。最新结果见[在线续跑收口](#2026-11-26-在线续跑收口)。下文先保留首批证据及旧窗口的历史记录。
 
 ## 结果总览
 
@@ -166,3 +166,59 @@ uv run --offline python scripts/motivation_holds_merge.py `
 ```
 
 - 代码修复仅记录代理读取和 HTTP 状态码：MS3 诊断请求现可显式使用环境 HTTPS 代理，失败条目保存可得 HTTP 状态。MS3-A 新校准请求计划为 `held_unresolved_prior_attempt_state`；MS2-B 与 MS3-B 计划为 `prepared_not_dispatched`。全量回归通过 151 项（含 2 项排除清单合并测试），Ruff 与差异检查通过；测试只验证工程行为，不是模型效果证据。
+
+## 2026-11-26 在线续跑收口
+
+**2026-11-26 续跑窗口，最后一次响应于北京时间 10:47:45 入账。** #28 授权 09:00–17:00 运行，现行边界为共享 300 次、各切片上限、冻结模型与参数、每个槽位最多一次、未知受理不重发、单一派发器及失败守卫。实际美元费用仅作审计。供应商未返回美元实扣，记为 `unknown`。MS3-B 的自动暂停遗漏见下文。
+
+| Issue / 切片 | 冻结计划与本轮实际覆盖 | 结论 / 终态 |
+| --- | --- | --- |
+| #30 MS3-A | 4 题独立校准及 12 个校准请求曾完成离线冻结；本轮新增发送 0。旧 23:42 启动仍有最多 12 次请求状态未知并占用 MS3-A 校准分项额度；未重发。 | `blocked / not planned`：分项请求额度被旧未知派发占住，校准无法可信启动，故不启动其 96 次条件性复验。此处阻塞是请求状态/分项上限，不是费用上限；无校准成功或诊断效应结论。 |
+| #31 MS3-B | ProcessBench 固定修复层 16 组（长/短各 8），G0–G3 各 16 次，实际发送 64 次。模型 `deepseek-v4.1-flash`，固定 `max_tokens=2000`、`reasoning_effort=none`、`temperature=0.7`。45/64 条正文非空，19/64 条为空且 `finish_reason=length`。 | G3–G1 可配对 10/16，G3–G2 为 9/16，G1–G0 为 11/16，四臂共同可审 9/16。各比较低于 13/16 门槛。仅报告覆盖，另登记运行守卫偏差。 |
+| #33 MS2-B | 独立冻结 64 组、128 个前缀评分请求，固定 `max_tokens=2048`、`stream=false`、`thinking=enabled`、JSON 输出。实际发送 12 次。首次连接超时，续跑 11 个原先未发送的槽位，遇计量异常暂停。 | `usage_out_of_bounds`。9 条有效单侧评分、0/64 个可配对题组，低于 52/64。历史 30/32、66.7% 保持原样。 |
+| #29 / #32 | 既有 MS1 双盲标注和 MS2-A 离线分析。 | 保持已归档发现，不重跑、不改写。 |
+| #34 | 本报告、Morning Brief、MS3-B 覆盖摘要和 PR #27 更新。 | 阶段交付完成；不是整项 Motivation Study 通过。 |
+
+### MS3-B 审计与解释
+
+冻结数据版本为 ProcessBench revision `3bdcd5371ed567559a78f559c01c13a6deee7604`，split `ms3b-confirmatory-union-20261125`。Manifest 指纹 `f0608d05fbff334bd179625a38eda46eb37f9b5c0867a2f9189f0e3748bf22ac`，采样种子 `20261125`，run ID `e692bd08da62423dbfa2da8c2e9bb1e0`。64 次均有输入和输出用量，合计输入 62,090、输出 87,361 Token。38 次报告了推理用量，报告值合计 51,522 Token，另 26 次推理用量未知。19 条空正文均以 `length` 结束。美元实扣未知。
+
+**运行守卫偏差。** 事后逐条审计发现 13 次供应商报告的推理 Token 比同次输出 Token 多 1–4 个，最早是第 9 次发送。运行时未因计量异常暂停。仅靠已知空正文，第 19 次发送后 G3–G2 最多也只有 12 对，第 22 次后 G3–G1 同样低于 13 对，脚本仍继续。13 条计量异常均落在原本不可评的空正文中，所以上述覆盖分母和可评数无需调整。修复 Runner 现已增加计量异常暂停与回归测试。保留本批真实记录，不对缺口补跑。
+
+独立盲审由 Codex agent 对去标识化材料完成，覆盖 45/45 个非空正文；评审看不到组别、原自动裁决或派发信息。该评审来源记为 `Agent-Assessed`，4 个修复判断保留不确定，**不等同人工签核或工具验证**。覆盖统计由 `scripts/analyze_ms3b_coverage.py` 离线复算，输出仅含覆盖，不暴露组别效应。复算命令（输出路径需尚不存在）：
+
+```powershell
+$run = 'artifacts/motivation-night-20261125/continuation-20261126-0921/motivation/e692bd08da62423dbfa2da8c2e9bb1e0'
+uv run --offline python scripts/analyze_ms3b_coverage.py `
+  --run-dir $run `
+  --manifest 'artifacts/motivation-night-20261125/continuation-2326/ms3b-repair/manifest.json' `
+  --review-input "$run/blind/independent-review-input.json" `
+  --review "$run/blind/independent-review-agent.json" `
+  --review-key "$run/restricted/independent-review-key.json" `
+  --output "$run/analysis/coverage-and-usage-replay.json"
+```
+
+### MS2-B 派发中止与共享额度
+
+#33 使用已批准的 AIGCPro `deepseek-v4.1-flash`，run ID `8c521e110f894d3384fe2db8bc18db31`。ProcessBench revision `3bdcd5371ed567559a78f559c01c13a6deee7604`，采样种子 `20261126`，manifest 指纹 `dc3684adbedbc4881dadff16efb732d8dc9de30368233255c0b0f6845502c0f0`。首次请求在 21,187 ms 后连接超时，SQLite 将受理和用量记为 `unknown`。核对冻结请求与同一台账后，沿用原端点、模型和参数，通过本机代理续跑尚未尝试的槽位。首次超时槽位只出现一次。第 12 次累计发送返回 2,050 个推理 Token 和 2,048 个输出 Token，暂停该路线。116 个请求仍未发送。
+
+11 条已返回响应中，9 条通过冻结的评分解析，1 条截断，1 条计量越界。可配对覆盖为 GSM8K 0/3、MATH 0/15、OlympiadBench 0/23、Omni-MATH 0/23。评分证据来源是 LLM 对匿名前缀的输出，配对标签来自冻结历史终答记录。11 条有用量的响应共报告输入 4,438、输出 14,256、推理 13,888 Token，合计包含计量异常条目的原值。超时请求的用量和整批实扣未知。
+
+```powershell
+$night = 'artifacts/motivation-night-20261125'
+$run = "$night/continuation-20261126-0921/ms2b-live-dispatch/run"
+uv run --offline python scripts/analyze_ms2b_retest.py `
+  --frozen-dir "$night/continuation-0011/ms2b-retest" `
+  --run-dir $run `
+  --output "$run/coverage-replay.json"
+```
+
+共享台账计入 **76 次实际发送**（MS3-B 64 + MS2-B 12），其中一次受理未知。另保留旧窗口最多 12 次未知占额，保守占用 **88/300**。未发送的 116 个 MS2-B 槽位保留在原计划中。MS3-A 的旧未知占额仍达分项 12 次上限，无法启动 4 组校准及其条件性 96 次复验。两批均无可核实美元实扣，无法判定实扣是否达到 USD 5。MS3-B 与 MS2-B 均使用已纳入 2,304 键排除清单的题单。
+
+本次离线重放与归档的首批汇总、MS1 汇总、论文 SVG 及 2,228 键基线清单逐字节一致。重建 2,304 键最终清单的内容一致，新输出仅含不同的基线文件路径。首批隔离检查限定为冻结时登记的 31 份历史来源，防止新运行工件被误认成抽样前已存在的重叠记录。全量工程回归 163 项通过。新批次的科学结论来自真实台账与盲审记录。
+
+### GitHub 工单终态
+
+- #29、#32 沿用既有离线验收。#31 交付真实批次的覆盖结论与运行偏差审计。
+- #30 因校准分项额度被历史未知派发占用而结束本窗口。#33 遇计量异常后关闭本窗口的执行，独立复验未达到可分析门槛。
+- #34 和 #28 交付本阶段报告、Morning Brief、离线复算及终态记录。整项研究验收仍缺 MS3-A 校准与独立复验、MS3-B 可分析的配对覆盖、MS2-B 可分析的配对覆盖。PR #27 保持开放。

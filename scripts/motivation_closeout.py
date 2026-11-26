@@ -117,8 +117,10 @@ def first_batch(root):
 
 def exclusions(root, followup):
     """Retain explicit old IDs and canonical aliases, not mixed-count 'unique questions'."""
-    seen, holds, sources = history()
     frozen = read(root / "coverage.json")["exclusion_sources"]
+    seen, holds, sources = history(
+        source_paths={Path(PureWindowsPath(name).as_posix()) for name in frozen}
+    )
     normalized_sources = {PureWindowsPath(name).as_posix(): sha for name, sha in sources.items()}
     if any(
         normalized_sources.get(PureWindowsPath(name).as_posix()) != sha

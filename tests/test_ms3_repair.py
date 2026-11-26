@@ -250,8 +250,11 @@ def _fields(group: str) -> dict[str, int]:
     return {}
 
 
-@pytest.mark.parametrize(('status_code', 'expected_status'), [(401, 'failed'), (524, 'unknown')])
-def test_run_pauses_route_after_authorization_or_unknown_failure(
+@pytest.mark.parametrize(
+    ('status_code', 'expected_status'),
+    [(401, 'failed'), (524, 'unknown'), (200, 'usage_out_of_bounds')],
+)
+def test_run_pauses_route_after_provider_failure_or_usage_discrepancy(
     tmp_path, monkeypatch, status_code, expected_status
 ):
     snapshot = tmp_path / "snapshot.json"
@@ -315,6 +318,14 @@ def test_run_pauses_route_after_authorization_or_unknown_failure(
         def post(self, url, json, headers):
             seen.append(json)
             request = httpx.Request("POST", url)
+            if status_code == 200:
+                return httpx.Response(200, request=request, json={
+                    "choices": [{"message": {"content": ""}, "finish_reason": "length"}],
+                    "usage": {
+                        "prompt_tokens": 1, "completion_tokens": 16,
+                        "completion_tokens_details": {"reasoning_tokens": 17},
+                    },
+                })
             return httpx.Response(status_code, request=request, text="provider failure")
 
     from ricl_experiment.core import model
@@ -331,3 +342,8 @@ def test_run_pauses_route_after_authorization_or_unknown_failure(
     assert metadata["dispatched_logical_calls"] == 1
     assert metadata["not_dispatched_logical_calls"] == 3
     assert metadata["dispatch_paused_reason"] == expected_status
+    if status_code == 200:
+        assert result["assignments"][0]["response_ref"]
+        with pytest.raises(ValueError, match="paused for a usage discrepancy"):
+            run_ms3_repair(config, snapshot, manifest, audit, answer_key, output, resume=True)
+        assert len(seen) == 1

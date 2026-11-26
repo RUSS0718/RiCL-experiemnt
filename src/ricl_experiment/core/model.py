@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -272,6 +273,16 @@ def dispatch_request(
 
     raise ModelDispatchError(
         f"{last_error}; retry again with the same run_id if attempts remain"
+    )
+
+
+def usage_out_of_bounds(attempt: Mapping[str, Any]) -> bool:
+    """Detect a reported completion count or reasoning subtotal beyond its bound."""
+    output = attempt["output_tokens"]
+    reasoning = attempt["reasoning_tokens"]
+    return output is not None and (
+        output > attempt["reserved_output_tokens"]
+        or (reasoning is not None and reasoning > output)
     )
 
 

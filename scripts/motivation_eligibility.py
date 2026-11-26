@@ -46,11 +46,13 @@ def identity(problem):
     return problem_fingerprint(normalize_problem(problem).casefold())
 
 
-def history():
+def history(*, source_paths: set[Path] | None = None):
     """Collect observed text and explicit group holds from local manifests and plans."""
     seen, holds, files = {}, set(), {}
     for directory in (Path("artifacts"), Path("data")):
         for path in sorted(directory.rglob("*.json")):
+            if source_paths is not None and path not in source_paths:
+                continue
             if "motivation-eligibility" in str(path) or not (
                 "manifest" in path.name
                 or path.name.endswith("plan.json")

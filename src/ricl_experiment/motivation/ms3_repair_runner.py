@@ -9,7 +9,7 @@ from typing import Any
 
 from ..config import RunConfig, fingerprint, validate_api_key
 from ..core.ledger import Ledger
-from ..core.model import ModelDispatchError, dispatch_request
+from ..core.model import ModelDispatchError, dispatch_request, usage_out_of_bounds
 from ..datasets.manifest import format_stratum, normalize_problem, problem_fingerprint
 from ..runner import _run_lock
 from .ms3_repair_protocol import (
@@ -128,6 +128,8 @@ def run_ms3_repair(
                     "usage": previous["usage"],
                     "status": "completed",
                 }
+            if previous.get("dispatch_paused_reason") == "usage_out_of_bounds":
+                raise ValueError("MS3 repair route is paused for a usage discrepancy")
         else:
             (output_dir / "blind").mkdir()
             (output_dir / "restricted").mkdir()
@@ -205,6 +207,11 @@ def run_ms3_repair(
                         route_pause_reason = status
                     assignment.update({"status": status, "response_ref": response_ref})
                     assignment["attempts"] = _call_attempts(ledger, call_id)
+                    if any(usage_out_of_bounds(attempt) for attempt in assignment["attempts"]):
+                        candidate_output = None
+                        assignment["status"] = "usage_out_of_bounds"
+                        missing_reason = "usage_out_of_bounds"
+                        route_pause_reason = "usage_out_of_bounds"
                     blind_records.append({
                         "evaluation_id": evaluation_id,
                         "problem": case["problem"],
@@ -233,7 +240,9 @@ def run_ms3_repair(
             })
             if route_pause_reason is not None:
                 metadata["dispatch_paused_reason"] = route_pause_reason
-            if all(row["response_ref"] is not None for row in assignments):
+            if route_pause_reason is None and all(
+                row["response_ref"] is not None for row in assignments
+            ):
                 run_status = "completed"
         finally:
             try:

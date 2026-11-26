@@ -154,7 +154,8 @@ def main() -> int:
                 "checkpoints": run["checkpoints"], "trace_sha256": sha256(run_dir / "trace.jsonl"),
             })
             halted = child.returncode not in (0, 1) or (
-                run["status"] == "failed" and run["stop_reason"] != "empty_content"
+                run["status"] == "failed"
+                and run["stop_reason"] not in {"empty_content", "empty_content_at_output_limit"}
             )
         print(f"{index}/{len(queue)} settled {rows[-1]['availability']}", flush=True)
         write_json(root / "progress.json", {"settled": index, "planned": len(queue), "last": case})

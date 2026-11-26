@@ -333,9 +333,43 @@ def call_chat_completion(
     }
 
 
+def _strip_outer_boxed(expr: str) -> str:
+    """Unwrap outer math delimiters, trailing periods, and full \\boxed{...} layers."""
+    value = expr.strip()
+    for _ in range(3):
+        prev = value
+        value = value.strip(" *$\t\r\n").rstrip(".").strip(" *$\t\r\n")
+        if value.startswith("\\(") and value.endswith("\\)"):
+            value = value[2:-2].strip()
+        if value.startswith("\\[") and value.endswith("\\]"):
+            value = value[2:-2].strip()
+        value = value.strip(" *$\t\r\n").rstrip(".").strip(" *$\t\r\n")
+        if value.startswith("\\boxed{"):
+            start = len("\\boxed{")
+            depth = 1
+            pos = start
+            while pos < len(value) and depth > 0:
+                if value[pos] == "{":
+                    depth += 1
+                elif value[pos] == "}":
+                    depth -= 1
+                pos += 1
+            if depth == 0 and pos == len(value):
+                value = value[start : pos - 1].strip()
+        if value == prev:
+            break
+    return value
+
+
+def format_boxed_answer(ans: str) -> str:
+    """Wrap an answer inside \\boxed{...} without double-wrapping an outer box."""
+    inner = _strip_outer_boxed(ans)
+    return f"\\boxed{{{inner or ans.strip()}}}"
+
+
 def _pre_normalize_latex_expr(expr: str) -> str:
     """Normalize common shorthand LaTeX before calling frozen answer.py rules."""
-    value = expr.strip()
+    value = _strip_outer_boxed(expr)
     value = value.replace("\\dfrac", "\\frac").replace("\\tfrac", "\\frac")
     value = re.sub(r"\\frac\s*([0-9A-Za-z])\s*([0-9A-Za-z])", r"\\frac{\1}{\2}", value)
     value = re.sub(r"\\sqrt\s*([0-9A-Za-z])", r"\\sqrt{\1}", value)
@@ -350,7 +384,7 @@ def evaluate_output(content: str, reference_answer: str) -> dict[str, Any]:
     if decision.status is AnswerStatus.BLIND_REVIEW and decision.extracted_answer:
         pre_ext = _pre_normalize_latex_expr(decision.extracted_answer)
         pre_ref = _pre_normalize_latex_expr(reference_answer)
-        fallback = classify_answer(f"\\boxed{{{pre_ext}}}", pre_ref)
+        fallback = classify_answer(format_boxed_answer(pre_ext), pre_ref)
         if fallback.status in {AnswerStatus.CORRECT, AnswerStatus.INCORRECT}:
             return {
                 "status": fallback.status.value,
@@ -1412,7 +1446,7 @@ def run_b1(
                     "step": item["rollout_index"],
                     "total_tokens": cum_tokens,
                     "final_answer": winner,
-                    "independent_eval_ready_text": f"\\boxed{{{winner}}}" if winner else None,
+                    "independent_eval_ready_text": format_boxed_answer(winner) if winner else None,
                     "rollout_extracted_answer": item.get("extracted_answer"),
                     "finish_reason": item.get("finish_reason"),
                     "ok": item.get("ok", True),
@@ -1432,7 +1466,7 @@ def run_b1(
                 "fresh_api_calls": sum(1 for item in seq if item["rollout_index"] >= 2),
                 "wall_time_s": round(cum_wall, 3),
                 "final_answer": final_winner,
-                "independent_eval_ready_text": f"\\boxed{{{final_winner}}}" if final_winner else None,
+                "independent_eval_ready_text": format_boxed_answer(final_winner) if final_winner else None,
                 "actions": ["sample"] * len(seq),
                 "lemma_stats": {
                     "extracted_count": 0,
@@ -1528,7 +1562,7 @@ def normalize_unified_record(raw: Mapping[str, Any], *, default_condition: str |
                 raise ValueError(f"checkpoint {idx} missing total_tokens/tokens for {problem_id}")
             ans = cp.get("final_answer")
             eval_text = cp.get("independent_eval_ready_text") or (
-                f"\\boxed{{{ans}}}" if isinstance(ans, str) and ans.strip() else None
+                format_boxed_answer(ans) if isinstance(ans, str) and ans.strip() else None
             )
             checkpoints.append(
                 {
@@ -1545,7 +1579,7 @@ def normalize_unified_record(raw: Mapping[str, Any], *, default_condition: str |
     else:
         ans = raw.get("final_answer")
         eval_text = raw.get("independent_eval_ready_text") or (
-            f"\\boxed{{{ans}}}" if isinstance(ans, str) and ans.strip() else None
+            format_boxed_answer(ans) if isinstance(ans, str) and ans.strip() else None
         )
         checkpoints.append(
             {

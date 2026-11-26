@@ -1,4 +1,5 @@
 from ricl_experiment.evaluation.answer import AnswerStatus, classify_answer
+from ricl_experiment.track1 import evaluate_output, format_boxed_answer
 
 
 def test_conflicting_explicit_answer_markers_are_sent_to_blinded_review():
@@ -19,3 +20,14 @@ def test_numeric_reference_answers_are_supported():
     decision = classify_answer("Final answer: 0.5", 0.5)
 
     assert decision.status is AnswerStatus.CORRECT
+
+
+def test_format_boxed_answer_and_double_boxed_dfrac_evaluation():
+    assert format_boxed_answer(r"\boxed{\dfrac{2}{1005}}.") == r"\boxed{\dfrac{2}{1005}}"
+    assert (
+        evaluate_output(format_boxed_answer(r"\boxed{\dfrac{2}{1005}}"), r"\frac{2}{1005}")[
+            "status"
+        ]
+        == "correct"
+    )
+    assert evaluate_output(r"\boxed{\boxed{\dfrac{2}{1005}}}", r"\frac{2}{1005}")["status"] == "correct"

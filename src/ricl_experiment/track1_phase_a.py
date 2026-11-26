@@ -20,6 +20,7 @@ from .track1 import (
     call_chat_completion,
     evaluate_curves,
     evaluate_output,
+    format_boxed_answer,
     load_problem_split,
     load_unified_runs,
     write_curves_and_plot,
@@ -213,7 +214,7 @@ def run_phase_a1(
         citations = [e for e in events if e.get("event") == "lemma_reuse"]
         final_ans = run_data.get("final_answer")
         ev = evaluate_output(
-            f"\\boxed{{{final_ans}}}" if isinstance(final_ans, str) and final_ans.strip() else "",
+            format_boxed_answer(final_ans) if isinstance(final_ans, str) and final_ans.strip() else "",
             prob.reference_answer,
         )
         rows.append(

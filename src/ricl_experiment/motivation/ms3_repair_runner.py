@@ -140,6 +140,7 @@ def run_ms3_repair(
         process_evidence: list[dict[str, Any]] = []
         request_audit: list[dict[str, Any]] = []
         run_status = "incomplete"
+        route_pause_reason = None
         ledger = Ledger(ledger_path, config.budget.max_reserved_output_tokens)
         try:
             for case in eligible:
@@ -201,6 +202,7 @@ def run_ms3_repair(
                         candidate_output = None
                         status = ledger.call_status(call_id) or "failed"
                         missing_reason = f"dispatch_{status}: {error}"
+                        route_pause_reason = status
                     assignment.update({"status": status, "response_ref": response_ref})
                     assignment["attempts"] = _call_attempts(ledger, call_id)
                     blind_records.append({
@@ -220,6 +222,17 @@ def run_ms3_repair(
                     _write_json(output_dir / "restricted" / "assignments.json", assignments)
                     _write_jsonl(output_dir / "blind" / "evaluations.jsonl", blind_records)
                     _write_jsonl(output_dir / "restricted" / "first-error-evidence.jsonl", process_evidence)
+                    if route_pause_reason is not None:
+                        break
+                if route_pause_reason is not None:
+                    break
+            metadata.update({
+                "planned_logical_calls": len(requests),
+                "dispatched_logical_calls": len(assignments),
+                "not_dispatched_logical_calls": len(requests) - len(assignments),
+            })
+            if route_pause_reason is not None:
+                metadata["dispatch_paused_reason"] = route_pause_reason
             if all(row["response_ref"] is not None for row in assignments):
                 run_status = "completed"
         finally:

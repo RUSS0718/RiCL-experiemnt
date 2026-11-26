@@ -248,3 +248,86 @@ def _fields(group: str) -> dict[str, int]:
     if group == "G3":
         return {"location_index": 0}
     return {}
+
+
+@pytest.mark.parametrize(('status_code', 'expected_status'), [(401, 'failed'), (524, 'unknown')])
+def test_run_pauses_route_after_authorization_or_unknown_failure(
+    tmp_path, monkeypatch, status_code, expected_status
+):
+    snapshot = tmp_path / "snapshot.json"
+    manifest = tmp_path / "manifest.json"
+    audit = tmp_path / "audit.json"
+    answer_key = tmp_path / "answer-key.json"
+    snapshot.write_text(json.dumps({
+        "source": "processbench", "revision": "rev1", "split": "test",
+        "records": [{
+            "id": "source-row-1", "trajectory_id": "trace-1",
+            "question_group_id": "question-1", "problem": "Solve x+1=2.",
+            "steps": ["first step", "second step"], "label": 0,
+            "reference_material": {"kind": "answer", "content": "x=1",
+                                   "source": "verified", "independently_verified": True},
+        }],
+    }), encoding="utf-8")
+    manifest.write_text(json.dumps({
+        "study": "ms3", "phase": "confirmatory", "sampling": {"seed": 17},
+        "sources": [{"source": "processbench", "revision": "rev1", "split": "test"}],
+        "samples": [{
+            "sample_id": "sample-1", "problem": "Solve x+1=2.",
+            "source_record_id": "processbench:rev1:test:source-row-1",
+            "trajectory_source_id": "trace-1", "question_group_id": "question-1",
+            "sampling_stratum": "processbench-blinded",
+        }],
+    }), encoding="utf-8")
+    audit.write_text(json.dumps({
+        "study_pools": {"repair": ["sample-1"]},
+        "processbench_labels": [{
+            "trajectory_id": "trajectory-1", "trajectory_source_id": "trace-1",
+            "label": 0, "meaning": "first_error_step_index_zero_based",
+        }],
+    }), encoding="utf-8")
+    answer_key.write_text(json.dumps([{
+        "sample_id": "sample-1", "steps": ["first step", "second step"],
+        "expert_label": 0,
+        "reference_material": {"kind": "answer", "content": "x=1",
+                               "source": "verified", "independently_verified": True},
+    }]), encoding="utf-8")
+    config = RunConfig.model_validate({
+        "model": {
+            "base_url": "http://localhost/v1", "model": "offline-test",
+            "capabilities": {"supported_parameters": ["max_tokens", "temperature"],
+                             "required_parameters": ["max_tokens"]},
+            "parameters": {"max_tokens": 16, "temperature": 0},
+        },
+        "budget": {"max_attempts_per_call": 1, "max_reserved_output_tokens": 64},
+    })
+    seen = []
+
+    class ControlledClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, url, json, headers):
+            seen.append(json)
+            request = httpx.Request("POST", url)
+            return httpx.Response(status_code, request=request, text="provider failure")
+
+    from ricl_experiment.core import model
+    monkeypatch.setattr(model.httpx, "Client", ControlledClient)
+    output = tmp_path / "run"
+    result = run_ms3_repair(config, snapshot, manifest, audit, answer_key, output)
+
+    assert len(seen) == 1
+    assert result["status"] == "incomplete"
+    assert len(result["assignments"]) == 1
+    assert result["assignments"][0]["status"] == expected_status
+    metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["planned_logical_calls"] == 4
+    assert metadata["dispatched_logical_calls"] == 1
+    assert metadata["not_dispatched_logical_calls"] == 3
+    assert metadata["dispatch_paused_reason"] == expected_status

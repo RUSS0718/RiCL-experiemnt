@@ -118,15 +118,21 @@ def main() -> int:
         question = root / "active-problem.txt"
         question.write_text(problem["problem"], encoding="utf-8")
         try:
-            child = subprocess.run([
+            command = [
                 sys.executable, "-m", "ricl_runtime.track1_cli", "--problem-file", str(question),
                 "--problem-id", case["id"], "--condition", condition,
                 "--source-revision", revision, "--output-dir", str(run_dir),
                 "--request-limit", str(spec["request_limit"]),
                 "--token-limit", str(spec["token_limit"]),
                 "--max-tokens", str(spec["max_tokens"]),
+                "--reasoning-effort", spec.get("reasoning_effort", "high"),
                 "--cost-limit-usd", spec["cost_limit_usd"],
-            ], cwd=runtime, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            ]
+            if args.stage == "screen":
+                command.append("--screen")
+            child = subprocess.run(
+                command, cwd=runtime, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+            )
         finally:
             question.unlink()
         run_file = run_dir / "run.json"
@@ -143,6 +149,7 @@ def main() -> int:
                 "config_hash": run["config_hash"], "actions": run["action_sequence"],
                 "known_total_tokens": run["known_total_tokens"], "total_tokens": run["total_tokens"],
                 "calls": run["api_calls"], "usd": run["estimated_or_reserved_usd"],
+                "preflight_usd": run["cost_preflight_upper_usd"],
                 "actual_paid_usd": run["actual_paid_usd"],
                 "checkpoints": run["checkpoints"], "trace_sha256": sha256(run_dir / "trace.jsonl"),
             })
@@ -157,6 +164,7 @@ def main() -> int:
         "known_tokens": sum(row.get("known_total_tokens", 0) for row in rows),
         "known_attempts": sum(row.get("calls", 0) for row in rows),
         "estimated_or_reserved_usd": str(sum(Decimal(row.get("usd", "0")) for row in rows)),
+        "cost_preflight_upper_usd": str(sum(Decimal(row.get("preflight_usd", "0")) for row in rows)),
         "actual_paid_usd": "unknown", "runner_halted": halted,
     })
     return int(halted)
@@ -164,4 +172,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

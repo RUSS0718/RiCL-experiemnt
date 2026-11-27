@@ -31,3 +31,10 @@ def test_format_boxed_answer_and_double_boxed_dfrac_evaluation():
         == "correct"
     )
     assert evaluate_output(r"\boxed{\boxed{\dfrac{2}{1005}}}", r"\frac{2}{1005}")["status"] == "correct"
+    assert (
+        evaluate_output(
+            r"\boxed{\displaystyle \left(\frac{n+1}{2}\right)^2+1}",
+            r"\left(\frac{n+1}{2}\right)^2 + 1",
+        )["status"]
+        == "correct"
+    )

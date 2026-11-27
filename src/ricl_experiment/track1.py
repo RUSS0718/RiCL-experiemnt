@@ -370,6 +370,7 @@ def format_boxed_answer(ans: str) -> str:
 def _pre_normalize_latex_expr(expr: str) -> str:
     """Normalize common shorthand LaTeX before calling frozen answer.py rules."""
     value = _strip_outer_boxed(expr)
+    value = re.sub(r"\\(?:display|text|script|scriptscript)style\b", "", value).strip()
     value = value.replace("\\dfrac", "\\frac").replace("\\tfrac", "\\frac")
     value = re.sub(r"\\frac\s*([0-9A-Za-z])\s*([0-9A-Za-z])", r"\\frac{\1}{\2}", value)
     value = re.sub(r"\\sqrt\s*([0-9A-Za-z])", r"\\sqrt{\1}", value)

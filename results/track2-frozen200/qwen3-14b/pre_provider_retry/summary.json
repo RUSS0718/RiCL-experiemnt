@@ -1,0 +1,166 @@
+{
+  "stage": "phase_c",
+  "created_at_utc": "2026-11-27T16:27:28.863878+00:00",
+  "runtime_dir": "D:\\project\\工程化MathAgent\\Challenge-Cup-2026",
+  "runtime_revision": "fe5f219a97b3464e0d4e2da52c588df02d4df30c",
+  "endpoint": "https://api.siliconflow.cn/v1",
+  "model": "Qwen/Qwen3-14B",
+  "reasoning_effort": "low",
+  "max_tokens": 16384,
+  "token_limit": 49152,
+  "token_caps": [
+    2048,
+    4096,
+    8192,
+    12288,
+    16384,
+    24576,
+    32768,
+    49152
+  ],
+  "request_limit": 8,
+  "max_requests": 6400,
+  "cost_limit_usd": "0.25",
+  "n_problems": 200,
+  "conditions": [
+    "B2",
+    "B3",
+    "B4",
+    "RiCL_v0.2"
+  ],
+  "planned_runs": 800,
+  "executed_runs": 800,
+  "total_api_calls": 3556,
+  "total_known_tokens": 11152652,
+  "total_estimated_usd": "2.41960614",
+  "by_condition": {
+    "B2": {
+      "completed_runs": 200,
+      "math_correct": 133,
+      "accuracy": 0.665,
+      "outcomes": {
+        "math_wrong": 38,
+        "math_correct": 133,
+        "blind_review": 7,
+        "technical_truncation": 18,
+        "no_evaluable_output": 2,
+        "provider_error": 2
+      },
+      "statuses": {
+        "completed": 100,
+        "stopped": 97,
+        "failed": 3
+      },
+      "api_calls": 951,
+      "known_total_tokens": 3098351,
+      "estimated_usd": "0.59149391",
+      "nonempty_salvage_runs": 0,
+      "total_cited_lemmas": 0,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "within_route_prefix_repair": 168,
+        "within_route_repair": 110
+      }
+    },
+    "B3": {
+      "completed_runs": 200,
+      "math_correct": 121,
+      "accuracy": 0.605,
+      "outcomes": {
+        "math_wrong": 53,
+        "provider_error": 6,
+        "math_correct": 121,
+        "blind_review": 6,
+        "technical_truncation": 12,
+        "no_evaluable_output": 2
+      },
+      "statuses": {
+        "stopped": 100,
+        "failed": 7,
+        "completed": 93
+      },
+      "api_calls": 1057,
+      "known_total_tokens": 2755092,
+      "estimated_usd": "0.52676526",
+      "nonempty_salvage_runs": 113,
+      "total_cited_lemmas": 210,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "rse_retry": 206
+      }
+    },
+    "B4": {
+      "completed_runs": 200,
+      "math_correct": 124,
+      "accuracy": 0.62,
+      "outcomes": {
+        "math_wrong": 43,
+        "math_correct": 124,
+        "technical_truncation": 6,
+        "provider_error": 21,
+        "blind_review": 5,
+        "no_evaluable_output": 1
+      },
+      "statuses": {
+        "completed": 111,
+        "stopped": 62,
+        "failed": 27
+      },
+      "api_calls": 848,
+      "known_total_tokens": 2592924,
+      "estimated_usd": "0.64511195",
+      "nonempty_salvage_runs": 0,
+      "total_cited_lemmas": 0,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "switch_no_salvage": 241
+      }
+    },
+    "RiCL_v0.2": {
+      "completed_runs": 200,
+      "math_correct": 127,
+      "accuracy": 0.635,
+      "outcomes": {
+        "math_wrong": 43,
+        "provider_error": 12,
+        "math_correct": 127,
+        "blind_review": 5,
+        "no_evaluable_output": 6,
+        "technical_truncation": 7
+      },
+      "statuses": {
+        "completed": 133,
+        "failed": 15,
+        "stopped": 52
+      },
+      "api_calls": 700,
+      "known_total_tokens": 2706285,
+      "estimated_usd": "0.65623502",
+      "nonempty_salvage_runs": 63,
+      "total_cited_lemmas": 84,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "scout_route": 162,
+        "pruned_repair": 94,
+        "continue": 1,
+        "salvage_switch": 30
+      }
+    }
+  },
+  "eval_conditions": [
+    "B1-SC",
+    "B2",
+    "B3",
+    "B4",
+    "RiCL_v0.2"
+  ],
+  "eval_outputs": {
+    "json": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\qwen3-14b\\eval\\curves.json",
+    "csv": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\qwen3-14b\\eval\\curves.csv",
+    "png": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\qwen3-14b\\eval\\accuracy_vs_total_tokens.png"
+  }
+}

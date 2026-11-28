@@ -1,0 +1,162 @@
+{
+  "stage": "phase_c",
+  "created_at_utc": "2026-11-27T04:45:03.608442+00:00",
+  "runtime_dir": "D:\\project\\工程化MathAgent\\Challenge-Cup-2026",
+  "runtime_revision": "fe5f219a97b3464e0d4e2da52c588df02d4df30c",
+  "endpoint": "https://api.siliconflow.cn/v1",
+  "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+  "reasoning_effort": "low",
+  "max_tokens": 16384,
+  "token_limit": 49152,
+  "token_caps": [
+    2048,
+    4096,
+    8192,
+    12288,
+    16384,
+    24576,
+    32768,
+    49152
+  ],
+  "request_limit": 8,
+  "max_requests": 6400,
+  "cost_limit_usd": "0.25",
+  "n_problems": 200,
+  "conditions": [
+    "B2",
+    "B3",
+    "B4",
+    "RiCL_v0.2"
+  ],
+  "planned_runs": 800,
+  "executed_runs": 800,
+  "total_api_calls": 2912,
+  "total_known_tokens": 6430857,
+  "total_estimated_usd": "3.34917150",
+  "by_condition": {
+    "B2": {
+      "completed_runs": 200,
+      "math_correct": 172,
+      "accuracy": 0.86,
+      "outcomes": {
+        "math_wrong": 18,
+        "math_correct": 172,
+        "no_evaluable_output": 3,
+        "blind_review": 4,
+        "provider_error": 3
+      },
+      "statuses": {
+        "stopped": 46,
+        "completed": 150,
+        "failed": 4
+      },
+      "api_calls": 796,
+      "known_total_tokens": 1740246,
+      "estimated_usd": "0.88057785",
+      "nonempty_salvage_runs": 0,
+      "total_cited_lemmas": 0,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "within_route_prefix_repair": 113,
+        "within_route_repair": 102
+      }
+    },
+    "B3": {
+      "completed_runs": 200,
+      "math_correct": 170,
+      "accuracy": 0.85,
+      "outcomes": {
+        "provider_error": 4,
+        "math_correct": 170,
+        "math_wrong": 17,
+        "no_evaluable_output": 7,
+        "blind_review": 2
+      },
+      "statuses": {
+        "failed": 4,
+        "completed": 161,
+        "stopped": 35
+      },
+      "api_calls": 777,
+      "known_total_tokens": 1407315,
+      "estimated_usd": "0.68481315",
+      "nonempty_salvage_runs": 61,
+      "total_cited_lemmas": 235,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "rse_retry": 114
+      }
+    },
+    "B4": {
+      "completed_runs": 200,
+      "math_correct": 170,
+      "accuracy": 0.85,
+      "outcomes": {
+        "math_wrong": 21,
+        "math_correct": 170,
+        "blind_review": 3,
+        "provider_error": 4,
+        "no_evaluable_output": 1,
+        "technical_truncation": 1
+      },
+      "statuses": {
+        "completed": 154,
+        "stopped": 41,
+        "failed": 5
+      },
+      "api_calls": 754,
+      "known_total_tokens": 1687702,
+      "estimated_usd": "0.88698660",
+      "nonempty_salvage_runs": 0,
+      "total_cited_lemmas": 0,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "switch_no_salvage": 205
+      }
+    },
+    "RiCL_v0.2": {
+      "completed_runs": 200,
+      "math_correct": 171,
+      "accuracy": 0.855,
+      "outcomes": {
+        "math_wrong": 18,
+        "math_correct": 171,
+        "blind_review": 4,
+        "provider_error": 4,
+        "no_evaluable_output": 3
+      },
+      "statuses": {
+        "completed": 176,
+        "stopped": 18,
+        "failed": 6
+      },
+      "api_calls": 585,
+      "known_total_tokens": 1595594,
+      "estimated_usd": "0.89679390",
+      "nonempty_salvage_runs": 23,
+      "total_cited_lemmas": 53,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "salvage_switch": 51,
+        "scout_route": 189,
+        "pruned_repair": 39
+      }
+    }
+  },
+  "eval_conditions": [
+    "B1-SC",
+    "B2",
+    "B3",
+    "B4",
+    "RiCL_v0.2"
+  ],
+  "eval_outputs": {
+    "json": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\deepseek-v41-flash\\eval\\curves.json",
+    "csv": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\deepseek-v41-flash\\eval\\curves.csv",
+    "png": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\deepseek-v41-flash\\eval\\accuracy_vs_total_tokens.png"
+  }
+}

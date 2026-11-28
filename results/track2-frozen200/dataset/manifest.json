@@ -1,0 +1,15 @@
+{
+  "schema_version": "track2-frozen200-v1",
+  "seed": "track2-frozen200-v1",
+  "n_problems": 200,
+  "source_counts": {
+    "omni_math": 100,
+    "olympiadbench": 50,
+    "math500": 50
+  },
+  "excluded_track1_qgids_count": 52,
+  "runtime_commit_sha": "fe5f219a97b3464e0d4e2da52c588df02d4df30c",
+  "experiment_commit_sha": "43bbc28d40f57de337b5a4d9932972359ab33bd0",
+  "problems_sha256": "2e4285b985a6bd33976ebeab0a66bfc517e507a47e728b0118685a4ee8e7a56f",
+  "answer_key_sha256": "4e7a2b8d458ecbad221f85d16cab3d214876252df7f943b7e7992503eba0271d"
+}

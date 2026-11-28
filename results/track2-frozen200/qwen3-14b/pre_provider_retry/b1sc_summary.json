@@ -1,0 +1,21 @@
+{
+  "stage": "phase_c_b1sc",
+  "created_at_utc": "2026-11-27T07:27:05.013425+00:00",
+  "endpoint": "https://api.siliconflow.cn/v1",
+  "model": "Qwen/Qwen3-14B",
+  "reasoning_effort": "low",
+  "max_tokens": 16384,
+  "n_problems": 200,
+  "n_rollouts": 3,
+  "pass_at_1": 0.58,
+  "maj_at_n": 0.665,
+  "oracle_pass_at_n": 0.7,
+  "pass1_correct": 116,
+  "maj_correct": 133,
+  "oracle_correct": 140,
+  "missing_answer_rollouts": 115,
+  "failed_rollouts": 13,
+  "total_tokens": 2387428,
+  "total_estimated_usd": "0.70510993",
+  "unified_b1_sc": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\qwen3-14b-b1sc\\unified_b1_sc.jsonl"
+}

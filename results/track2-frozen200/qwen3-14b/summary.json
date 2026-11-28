@@ -1,0 +1,162 @@
+{
+  "stage": "phase_c",
+  "created_at_utc": "2026-11-28T01:12:23.610374+00:00",
+  "runtime_dir": "D:\\project\\工程化MathAgent\\Challenge-Cup-2026",
+  "runtime_revision": "fe5f219a97b3464e0d4e2da52c588df02d4df30c",
+  "endpoint": "https://api.siliconflow.cn/v1",
+  "model": "Qwen/Qwen3-14B",
+  "reasoning_effort": "low",
+  "max_tokens": 16384,
+  "token_limit": 49152,
+  "token_caps": [
+    2048,
+    4096,
+    8192,
+    12288,
+    16384,
+    24576,
+    32768,
+    49152
+  ],
+  "request_limit": 8,
+  "max_requests": 6400,
+  "cost_limit_usd": "0.25",
+  "n_problems": 200,
+  "conditions": [
+    "B2",
+    "B3",
+    "B4",
+    "RiCL_v0.2"
+  ],
+  "planned_runs": 800,
+  "executed_runs": 800,
+  "total_api_calls": 3691,
+  "total_known_tokens": 12232330,
+  "total_estimated_usd": "2.44506045",
+  "by_condition": {
+    "B2": {
+      "completed_runs": 200,
+      "math_correct": 133,
+      "accuracy": 0.665,
+      "outcomes": {
+        "math_wrong": 38,
+        "math_correct": 133,
+        "blind_review": 7,
+        "technical_truncation": 20,
+        "no_evaluable_output": 2
+      },
+      "statuses": {
+        "completed": 100,
+        "stopped": 99,
+        "failed": 1
+      },
+      "api_calls": 955,
+      "known_total_tokens": 3145861,
+      "estimated_usd": "0.59583370",
+      "nonempty_salvage_runs": 0,
+      "total_cited_lemmas": 0,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "within_route_prefix_repair": 170,
+        "within_route_repair": 109
+      }
+    },
+    "B3": {
+      "completed_runs": 200,
+      "math_correct": 125,
+      "accuracy": 0.625,
+      "outcomes": {
+        "math_wrong": 55,
+        "math_correct": 125,
+        "blind_review": 6,
+        "technical_truncation": 12,
+        "no_evaluable_output": 2
+      },
+      "statuses": {
+        "stopped": 103,
+        "completed": 96,
+        "failed": 1
+      },
+      "api_calls": 1084,
+      "known_total_tokens": 2910295,
+      "estimated_usd": "0.52774526",
+      "nonempty_salvage_runs": 118,
+      "total_cited_lemmas": 214,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "rse_retry": 212
+      }
+    },
+    "B4": {
+      "completed_runs": 200,
+      "math_correct": 126,
+      "accuracy": 0.63,
+      "outcomes": {
+        "math_wrong": 51,
+        "math_correct": 126,
+        "technical_truncation": 16,
+        "blind_review": 6,
+        "no_evaluable_output": 1
+      },
+      "statuses": {
+        "completed": 113,
+        "stopped": 80,
+        "failed": 7
+      },
+      "api_calls": 913,
+      "known_total_tokens": 3121905,
+      "estimated_usd": "0.65212287",
+      "nonempty_salvage_runs": 0,
+      "total_cited_lemmas": 0,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "switch_no_salvage": 264
+      }
+    },
+    "RiCL_v0.2": {
+      "completed_runs": 200,
+      "math_correct": 132,
+      "accuracy": 0.66,
+      "outcomes": {
+        "math_wrong": 46,
+        "math_correct": 132,
+        "blind_review": 6,
+        "no_evaluable_output": 6,
+        "technical_truncation": 10
+      },
+      "statuses": {
+        "completed": 135,
+        "stopped": 62,
+        "failed": 3
+      },
+      "api_calls": 739,
+      "known_total_tokens": 3054269,
+      "estimated_usd": "0.66935862",
+      "nonempty_salvage_runs": 70,
+      "total_cited_lemmas": 89,
+      "warning_count": 0,
+      "action_counts": {
+        "initial": 200,
+        "scout_route": 167,
+        "pruned_repair": 101,
+        "continue": 1,
+        "salvage_switch": 35
+      }
+    }
+  },
+  "eval_conditions": [
+    "B1-SC",
+    "B2",
+    "B3",
+    "B4",
+    "RiCL_v0.2"
+  ],
+  "eval_outputs": {
+    "json": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\qwen3-14b\\eval\\curves.json",
+    "csv": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\qwen3-14b\\eval\\curves.csv",
+    "png": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\qwen3-14b\\eval\\accuracy_vs_total_tokens.png"
+  }
+}

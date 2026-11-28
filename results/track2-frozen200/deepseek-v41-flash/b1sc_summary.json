@@ -1,0 +1,21 @@
+{
+  "stage": "phase_c_b1sc",
+  "created_at_utc": "2026-11-27T16:35:23.711610+00:00",
+  "endpoint": "https://api.siliconflow.cn/v1",
+  "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+  "reasoning_effort": "low",
+  "max_tokens": 16384,
+  "n_problems": 200,
+  "n_rollouts": 3,
+  "pass_at_1": 0.86,
+  "maj_at_n": 0.885,
+  "oracle_pass_at_n": 0.92,
+  "pass1_correct": 172,
+  "maj_correct": 177,
+  "oracle_correct": 184,
+  "missing_answer_rollouts": 25,
+  "failed_rollouts": 1,
+  "total_tokens": 1578613,
+  "total_estimated_usd": "0.90070875",
+  "unified_b1_sc": "D:\\project\\RiCL_experiment\\artifacts\\track2-frozen200\\deepseek-v41-flash-b1sc\\unified_b1_sc.jsonl"
+}

@@ -1,6 +1,7 @@
 # Research documentation map
 
 - [Motivation Study v1.0 stage report](motivation-study-report.md): reviewed findings, missingness, and offline replay.
+- [Track 2 frozen-200 dual-model confirmatory report](track2-frozen200-report.md): frozen benchmark dataset, `DeepSeek-V4.1-Flash` & `Qwen3-14B` curves, audit trail, and issue `#35` results.
 - [Motivation Study Morning Brief](motivation-study-morning-brief.md): one-page decision summary.
 
 - [Motivation Study first batch](motivation-study-first-batch.md): archived results and coverage.
